@@ -1,0 +1,34 @@
+Project proposal: a VLIW+SIMD engineering game
+
+We want to build a little engineering game about performance. You get a tiny accelerator, a clear score (cycle count), and a baseline program that’s intentionally leaving performance on the table. Your job is to beat it. The “board” is a toy VLIW+SIMD machine with a few per-cycle engines (scalar ALU, vector ALU, load, store, control/flow) and a fixed SIMD width (we’re thinking 8 lanes). It’s small enough to hold in your head, but it still has the real annoying parts: dependencies, hazards, and “you only get so many slots per cycle.”
+
+We got excited about this after reading Anthropic’s write-up on designing high-signal technical challenges (https://www.anthropic.com/engineering/AI-resistant-technical-evaluations) and looking through their simulated-accelerator optimization repo (https://github.com/anthropics/original_performance_takehome). We’re not doing an AI project, and we’re not copying their assignment. We’re borrowing the core idea: make something tool-friendly, measurable, and fun to optimize.
+
+Everything will be written in Haskell. That’s the point for this class. We’ll define the ISA and IR as algebraic data types, write a simulator that executes cycle-by-cycle, and build a compiler/optimizer that emits programs for our machine. If we do this right, it’ll feel like a clean FP project: small DSLs, pure passes, and tests that tell us when we broke semantics.
+
+Milestones (so we don’t disappear into “one more feature” forever)
+
+Easy (minimum viable)
+- Write down the ISA + the cycle rules (including the exact hazard model, like “writes commit at end of cycle”) and get a correct simulator running.
+- Ship one baseline kernel/program plus a reference implementation, so we can check outputs automatically.
+- Write a Haskell emitter that produces runnable programs for the simulator, with a correctness check that compares against the reference.
+
+Medium (the real compiler part)
+- Add a small IR and a lowering pass into ISA instructions.
+- Do dependence analysis and implement a VLIW bundler/scheduler (greedy packing or list scheduling) that respects engine slot limits and same-cycle hazards.
+- Add a couple of basic cleanups (dead-code elimination, simple CSE/hoisting) and a minimal register/scratch allocation strategy.
+- Measure: baseline vs. optimized cycle counts, plus a short “what was the bottleneck?” writeup.
+
+Challenge (if we’re ahead and it still feels worth it)
+- SIMD vectorization across an 8-wide batch dimension, using vector ops when they actually win.
+- Deal with irregular memory without turning the schedule into spaghetti.
+- Add a rough “vectorize or not” cost model so we don’t just spray vector instructions everywhere.
+- Optional: a tiny “optimal scheduler for small windows” using SBV/SMT or ILP, mostly as a reality check against heuristics.
+- Optional: nicer traces/visuals so you can see engine utilization improve, not just a single number.
+
+What we’ll need beyond the course (and where office hours help)
+We’ll need to learn some compiler-ish ideas (dependence tracking, scheduling, basic allocation) and we’ll also be leaning hard on Haskell/FP fundamentals to keep the whole thing clean: a crisp AST/IR, pure passes, and a simulator that we can actually trust. Practically, that probably means parsing/pretty-printing a tiny assembly format, structuring effects (state + errors + logs), and using QuickCheck to test simulator invariants and compiler correctness.i
+
+Credits / inspiration (to cite in the final writeup)
+- Anthropic engineering blog post on evaluation design: https://www.anthropic.com/engineering/AI-resistant-technical-evaluations
+- Anthropic simulated-accelerator optimization repo: https://github.com/anthropics/original_performance_takehome
