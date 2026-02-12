@@ -1,34 +1,24 @@
-Project proposal: a VLIW+SIMD engineering game
+We propose to build a small compiler toolchain in Haskell for the VLIW+SIMD "accelerator" described in Anthropic’s original performance take-home (https://github.com/anthropics/original_performance_takehome).
 
-We want to build a little engineering game about performance. You get a tiny accelerator, a clear score (cycle count), and a baseline program that’s intentionally leaving performance on the table. Your job is to beat it. The “board” is a toy VLIW+SIMD machine with a few per-cycle engines (scalar ALU, vector ALU, load, store, control/flow) and a fixed SIMD width (we’re thinking 8 lanes). It’s small enough to hold in your head, but it still has the real annoying parts: dependencies, hazards, and “you only get so many slots per cycle.”
+The simulator exposes multiple execution paths including a scalar ALU, vector ALU, load, store, etc., and a SIMD width of 8 lanes.
 
-We got excited about this after reading Anthropic’s write-up on designing high-signal technical challenges (https://www.anthropic.com/engineering/AI-resistant-technical-evaluations) and looking through their simulated-accelerator optimization repo (https://github.com/anthropics/original_performance_takehome). We’re not doing an AI project, and we’re not copying their assignment. We’re borrowing the core idea: make something tool-friendly, measurable, and fun to optimize.
+We are provided a baseline program that is intentionally under-optimized: it emits one operation per cycle and leaves most of the machine's parallelism unused.
 
-Everything will be written in Haskell. That’s the point for this class. We’ll define the ISA and IR as algebraic data types, write a simulator that executes cycle-by-cycle, and build a compiler/optimizer that emits programs for our machine. If we do this right, it’ll feel like a clean FP project: small DSLs, pure passes, and tests that tell us when we broke semantics.
+Our project will generate correct programs for this ISA and then optimize with compiler techniques: instruction selection/lowering, dependence analysis, VLIW bundling (packing independent ops into the same cycle), and selective vectorization. The end goal is to demonstrate measurable cycle-count improvements on the provided harness while maintaining correctness against the reference implementation.
 
-Milestones (so we don’t disappear into “one more feature” forever)
+We believe this to be a good fit for the class since a lot of the compiler techniques are very neatly expressible in Haskell: dependence analysis is a graph problem, ISA and IR can be ADTs, the simultor could be monadic (either through the State monad or something proprietary). Compilers are, in general, very nice to write in functional languages.
 
-Easy (minimum viable)
-- Write down the ISA + the cycle rules (including the exact hazard model, like “writes commit at end of cycle”) and get a correct simulator running.
-- Ship one baseline kernel/program plus a reference implementation, so we can check outputs automatically.
-- Write a Haskell emitter that produces runnable programs for the simulator, with a correctness check that compares against the reference.
+First priority:
+* Model the ISA ADT and build a program emitter that can output a runnable program for Anthropic's Python simulator.
+* Ensure that we can emit the baseline program, and that it runs correctly by check correctness by comparing outputs with the reference simulator.
 
-Medium (the real compiler part)
-- Add a small IR and a lowering pass into ISA instructions.
-- Do dependence analysis and implement a VLIW bundler/scheduler (greedy packing or list scheduling) that respects engine slot limits and same-cycle hazards.
-- Add a couple of basic cleanups (dead-code elimination, simple CSE/hoisting) and a minimal register/scratch allocation strategy.
-- Measure: baseline vs. optimized cycle counts, plus a short “what was the bottleneck?” writeup.
+Next step:
+* Implement a dependence analysis VLIW scheduler (e.g., greedy scheduler)
+* Add basic optimizations for scheduling: common subexpression elimination/constant hoisting, dead-code elimination, and simple register allocation. Note that in Anthropic's simulator this is allocation on a scratch buffer, not quite reg alloc, but they're conceptually similar.
 
-Challenge (if we’re ahead and it still feels worth it)
-- SIMD vectorization across an 8-wide batch dimension, using vector ops when they actually win.
-- Deal with irregular memory without turning the schedule into spaghetti.
-- Add a rough “vectorize or not” cost model so we don’t just spray vector instructions everywhere.
-- Optional: a tiny “optimal scheduler for small windows” using SBV/SMT or ILP, mostly as a reality check against heuristics.
-- Optional: nicer traces/visuals so you can see engine utilization improve, not just a single number.
+Challenge:
+* SIMD vectorization, using vector ALU ops and gathers properly.
+* Modulo scheduling and other advanced scheduling techniques? We have been reading about optimal pipelining and scheduling, this is a very interesting problem (https://arxiv.org/pdf/2512.18134)
 
-What we’ll need beyond the course (and where office hours help)
-We’ll need to learn some compiler-ish ideas (dependence tracking, scheduling, basic allocation) and we’ll also be leaning hard on Haskell/FP fundamentals to keep the whole thing clean: a crisp AST/IR, pure passes, and a simulator that we can actually trust. Practically, that probably means parsing/pretty-printing a tiny assembly format, structuring effects (state + errors + logs), and using QuickCheck to test simulator invariants and compiler correctness.i
 
-Credits / inspiration (to cite in the final writeup)
-- Anthropic engineering blog post on evaluation design: https://www.anthropic.com/engineering/AI-resistant-technical-evaluations
-- Anthropic simulated-accelerator optimization repo: https://github.com/anthropics/original_performance_takehome
+We'd also like to build nice pretty-printing and visualization tools that will help us build intuition about this problem. It is unclear what sort of tools we will build, but that will become clear as we begin work.
