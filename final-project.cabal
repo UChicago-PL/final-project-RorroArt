@@ -28,5 +28,15 @@ executable compiler
     import:           shared
     hs-source-dirs:   app/compiler
     main-is:          Main.hs
+    other-modules:
+        ISA
+        BaselineKernel
+        PythonInterop
+        FinalIR
+        FinalLowering
+        BaselineKernelFinalIR
+        BaselineKernelFinalLowering
     build-depends:
         final-project
+        , containers >= 0.6 && < 0.7
+        , mtl >= 2.3 && < 2.4
