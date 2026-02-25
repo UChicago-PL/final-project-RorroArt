@@ -1,0 +1,32 @@
+cabal-version:      3.0
+name:               final-project
+version:            0.1.0.0
+license:            MIT
+author:             RorroArt
+build-type:         Simple
+
+common shared
+    default-language: GHC2021
+    ghc-options:      -Wall
+    build-depends:
+        base >= 4.17 && < 5
+
+library
+    import:           shared
+    hs-source-dirs:   src
+    exposed-modules:
+        Lib
+
+executable simulator
+    import:           shared
+    hs-source-dirs:   app/simulator
+    main-is:          Main.hs
+    build-depends:
+        final-project
+
+executable compiler
+    import:           shared
+    hs-source-dirs:   app/compiler
+    main-is:          Main.hs
+    build-depends:
+        final-project
