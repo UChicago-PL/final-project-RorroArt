@@ -130,15 +130,12 @@ runTarget target = do
                   if loopsVectorized stats > 0
                     then liftIO (putStrLn "Goal check:     PASS")
                     else do
-                      liftIO (putStrLn "Goal check:     FAIL (expected at least one true SIMD-vectorized loop)")
+                      liftIO (putStrLn "Goal check:     FAIL (expected at least one vectorized loop)")
                       whenReadyFail target
                 GoalAspirational ->
                   if loopsVectorized stats > 0
-                    then liftIO (putStrLn "Goal check:     NOTE (true SIMD vectorization reached)")
-                    else
-                      if loopsWidened stats > 0
-                        then liftIO (putStrLn "Goal check:     NOTE (widened via scalarized fallback; SIMD TODO)")
-                        else liftIO (putStrLn "Goal check:     TODO (not widened/vectorized yet)")
+                    then liftIO (putStrLn "Goal check:     NOTE (vectorized)")
+                    else liftIO (putStrLn "Goal check:     TODO (not vectorized yet)")
 
 whenReadyFail :: AutovecTarget -> StateT [String] IO ()
 whenReadyFail target =

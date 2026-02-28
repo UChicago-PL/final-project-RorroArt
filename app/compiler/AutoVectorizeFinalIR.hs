@@ -55,6 +55,12 @@ type ConstEnv = M.Map Id Int
 data Mode = MUniform | MLaneBase | MVec
   deriving (Show, Eq)
 
+data LaneForm
+  = LFUnknown
+  | LFUniform
+  | LFLane !Int
+  deriving (Show, Eq)
+
 data VInfo = VInfo
   { viId :: !Id
   , viTy :: !Ty
@@ -251,15 +257,15 @@ tryVectorizeLoop
   -> Stmt BaselineDebugKeyRef
   -> AVM [Stmt BaselineDebugKeyRef]
 tryVectorizeLoop tyEnv constEnv stmt@(For ex lb ub step inits body outs) = do
-  case ex of
-    ExecScalar -> pure ()
-    _ -> pure ()
-  let isScalar = ex == ExecScalar
-      supportedBody = all isSimpleStmt (regionStmts body)
-      hasNestedCF = any hasControlFlow (regionStmts body)
+  let canVectorize =
+        ex == ExecScalar
+          && step == 1
+          && all isSimpleStmt (regionStmts body)
+          && not (any hasControlFlow (regionStmts body))
+          && loopVectorizationLegal constEnv body
       maybeUb = M.lookup ub constEnv
-  case (isScalar, step == 1, supportedBody, not hasNestedCF, maybeUb) of
-    (True, True, True, True, Just ubInt) -> do
+  case (canVectorize, maybeUb) of
+    (True, Just ubInt) -> do
       let trip = ubInt - lb
           vecUbInt = lb + ((max 0 trip `div` 8) * 8)
       if vecUbInt <= lb
@@ -308,6 +314,176 @@ tryVectorizeLoop tyEnv constEnv stmt@(For ex lb ub step inits body outs) = do
     _ -> pure [For ex lb ub step inits body outs]
 tryVectorizeLoop _ _ stmt = pure [stmt]
 
+loopVectorizationLegal :: ConstEnv -> Region BaselineDebugKeyRef -> Bool
+loopVectorizationLegal constEnv body =
+  carriesAreMem body
+    && not (hasTraceWrite (regionStmts body))
+    && not (hasUnsupportedAffineStride constEnv body)
+
+carriesAreMem :: Region k -> Bool
+carriesAreMem body =
+  all (isMemTy . snd) (drop 1 (regionParams body))
+
+isMemTy :: Ty -> Bool
+isMemTy ty = case ty of
+  Mem _ -> True
+  _ -> False
+
+hasTraceWrite :: [Stmt k] -> Bool
+hasTraceWrite = any isTrace
+  where
+    isTrace stmt = case stmt of
+      Eff (ETraceWrite _) -> True
+      _ -> False
+
+hasUnsupportedAffineStride :: ConstEnv -> Region k -> Bool
+hasUnsupportedAffineStride outerConstEnv body =
+  any addrHasUnsupportedStride addrs
+  where
+    stmts = regionStmts body
+    ivMay = case regionParams body of
+      ((iv, _) : _) -> Just iv
+      _ -> Nothing
+    constEnv = foldl updateConstEnv outerConstEnv stmts
+    defs = collectDefs stmts
+
+    addrs = concatMap stmtAddrs stmts
+
+    addrHasUnsupportedStride addr =
+      hasIxLaneAddr addr || case inferAddrForm constEnv defs ivMay addr of
+        LFLane stride -> stride /= 1
+        _ -> False
+
+collectDefs :: [Stmt k] -> M.Map Id Rhs
+collectDefs = foldl insertStmt M.empty
+  where
+    insertStmt acc stmt = case stmt of
+      Let [(out, _)] rhs -> M.insert out rhs acc
+      _ -> acc
+
+stmtAddrs :: Stmt k -> [Addr]
+stmtAddrs stmt = case stmt of
+  Let _ rhs -> rhsAddrs rhs
+  _ -> []
+
+rhsAddrs :: Rhs -> [Addr]
+rhsAddrs rhs = case rhs of
+  RLoad _ addr -> [addr]
+  RStore _ addr _ -> [addr]
+  _ -> []
+
+hasIxLaneAddr :: Addr -> Bool
+hasIxLaneAddr (Addr _ idx) = case idx of
+  IndexAff ix -> ixHasLane ix
+  _ -> False
+
+ixHasLane :: Ix -> Bool
+ixHasLane ix = case ix of
+  IxConst _ -> False
+  IxVar _ -> False
+  IxLane -> True
+  IxAdd a b -> ixHasLane a || ixHasLane b
+  IxMul _ x -> ixHasLane x
+
+inferAddrForm
+  :: ConstEnv
+  -> M.Map Id Rhs
+  -> Maybe Id
+  -> Addr
+  -> LaneForm
+inferAddrForm constEnv defs ivMay (Addr _ idx) = case idx of
+  IndexVal idxId -> inferIdForm constEnv defs ivMay S.empty idxId
+  IndexAff ix -> inferIxForm constEnv defs ivMay S.empty ix
+
+inferIxForm
+  :: ConstEnv
+  -> M.Map Id Rhs
+  -> Maybe Id
+  -> S.Set Id
+  -> Ix
+  -> LaneForm
+inferIxForm constEnv defs ivMay seen ix = case ix of
+  IxConst _ -> LFUniform
+  IxVar i -> inferIdForm constEnv defs ivMay seen i
+  IxLane -> LFLane 1
+  IxAdd a b -> combineAdd (inferIxForm constEnv defs ivMay seen a) (inferIxForm constEnv defs ivMay seen b)
+  IxMul k x -> scaleLane k (inferIxForm constEnv defs ivMay seen x)
+
+inferIdForm
+  :: ConstEnv
+  -> M.Map Id Rhs
+  -> Maybe Id
+  -> S.Set Id
+  -> Id
+  -> LaneForm
+inferIdForm constEnv defs ivMay seen i
+  | Just i == ivMay = LFLane 1
+  | M.member i constEnv = LFUniform
+  | S.member i seen = LFUnknown
+  | otherwise =
+      case M.lookup i defs of
+        Nothing -> LFUnknown
+        Just rhs -> inferRhsForm constEnv defs ivMay (S.insert i seen) rhs
+
+inferRhsForm
+  :: ConstEnv
+  -> M.Map Id Rhs
+  -> Maybe Id
+  -> S.Set Id
+  -> Rhs
+  -> LaneForm
+inferRhsForm constEnv defs ivMay seen rhs = case rhs of
+  RConst _ -> LFUniform
+  RBin op a b ->
+    let fa = inferIdForm constEnv defs ivMay seen a
+        fb = inferIdForm constEnv defs ivMay seen b
+        ca = M.lookup a constEnv
+        cb = M.lookup b constEnv
+     in inferBinForm op fa fb ca cb
+  RSelect _ t f ->
+    let ft = inferIdForm constEnv defs ivMay seen t
+        ff = inferIdForm constEnv defs ivMay seen f
+     in if ft == ff then ft else LFUnknown
+  _ -> LFUnknown
+
+inferBinForm
+  :: AluOp
+  -> LaneForm
+  -> LaneForm
+  -> Maybe Int
+  -> Maybe Int
+  -> LaneForm
+inferBinForm op fa fb constA constB = case op of
+  Add -> combineAdd fa fb
+  Sub -> combineSub fa fb
+  Mul ->
+    case (fa, fb, constA, constB) of
+      (LFLane s, LFUniform, _, Just c) -> LFLane (s * c)
+      (LFUniform, LFLane s, Just c, _) -> LFLane (s * c)
+      (LFUniform, LFUniform, _, _) -> LFUniform
+      _ -> LFUnknown
+  _ -> LFUnknown
+
+combineAdd :: LaneForm -> LaneForm -> LaneForm
+combineAdd fa fb = case (fa, fb) of
+  (LFUniform, x) -> x
+  (x, LFUniform) -> x
+  (LFLane a, LFLane b) -> LFLane (a + b)
+  _ -> LFUnknown
+
+combineSub :: LaneForm -> LaneForm -> LaneForm
+combineSub fa fb = case (fa, fb) of
+  (x, LFUniform) -> x
+  (LFUniform, LFLane b) -> LFLane (negate b)
+  (LFLane a, LFLane b) -> LFLane (a - b)
+  _ -> LFUnknown
+
+scaleLane :: Int -> LaneForm -> LaneForm
+scaleLane k form = case form of
+  LFUniform -> LFUniform
+  LFLane s -> LFLane (k * s)
+  LFUnknown -> LFUnknown
+
 isSimpleStmt :: Stmt k -> Bool
 isSimpleStmt s = case s of
   Let _ _ -> True
@@ -331,10 +507,9 @@ buildVectorBody
   -> Region BaselineDebugKeyRef
   -> AVM (Region BaselineDebugKeyRef)
 buildVectorBody tyEnv _inits body = do
-  let params = regionParams body
-  when (null params) (lift (Left "vectorize: loop body missing induction parameter"))
-  let (oldIv, _) = head params
-      carryParams = tail params
+  (oldIv, carryParams) <- case regionParams body of
+    [] -> lift (Left "vectorize: loop body missing induction parameter")
+    (iv, _) : rest -> pure (iv, rest)
 
   newIv <- freshId
   newCarryParams <- mapM (\(_, ty) -> freshOut ty) carryParams
@@ -374,15 +549,15 @@ buildVectorBody tyEnv _inits body = do
 buildLaneIds :: Id -> AVM ([Stmt BaselineDebugKeyRef], [Id])
 buildLaneIds ivBase = do
   let lane0 = ivBase
-  (stmts, lanesRev) <- foldM step ([], [lane0]) [1 .. 7 :: Int]
+  one <- freshId
+  (stmts, lanesRev) <- foldM (step one) ([Let [(one, I32)] (RConst 1)], [lane0]) [1 .. 7 :: Int]
   pure (stmts, reverse lanesRev)
   where
-    step (acc, lanes) lane = do
-      c <- freshId
+    step oneId (acc, lanes@(prev : _)) _lane = do
       lid <- freshId
-      let cStmt = Let [(c, I32)] (RConst (fromIntegral lane))
-          lStmt = Let [(lid, I32)] (RBin Add ivBase c)
-      pure (acc ++ [cStmt, lStmt], lid : lanes)
+      let lStmt = Let [(lid, I32)] (RBin Add prev oneId)
+      pure (acc ++ [lStmt], lid : lanes)
+    step _ _ _ = lift (Left "vectorize: lane generation invariant broken")
 
 transformStmts :: [Stmt BaselineDebugKeyRef] -> VecM [Stmt BaselineDebugKeyRef]
 transformStmts [] = pure []
@@ -415,7 +590,7 @@ transformEff eff = case eff of
         let ks = map (substKey oldIv) lanes
         pure [Eff (EDebugCompareV (viId info) (map (\f -> f k) ks))]
       _ -> do
-        let k' = substKeySingle oldIv newIv k
+        let k' = substKey oldIv newIv k
         pure [Eff (EDebugCompare (viId info) k')]
   EDebugCompareV v ks -> do
     info <- infoFor v
@@ -649,9 +824,6 @@ substKey oldIv newIv key = case key of
       RefConst n -> RefConst n
       RefIv i | i == oldIv -> RefIv newIv
       RefIv i -> RefIv i
-
-substKeySingle :: Id -> Id -> BaselineDebugKeyRef -> BaselineDebugKeyRef
-substKeySingle = substKey
 
 --------------------------------------------------------------------------------
 -- Type/constant helpers

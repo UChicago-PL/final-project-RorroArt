@@ -1,6 +1,7 @@
 module Main where
 
 import AutoVectorizeFinalIR (autovecBaselineKernel)
+import AutovecProgramSuite (runAutovecSuite)
 import BaselineKernelFinalLowering (lowerBaselineKernelFinalIR)
 import qualified BaselineKernelFinalIR as FinalBaseline
 import PythonInterop (renderProgramPayload)
@@ -36,6 +37,8 @@ main = do
       case (readMaybe roundsStr, readMaybe batchStr) of
         (Just rounds, Just batchSize) -> printAutovecStats rounds batchSize
         _ -> dieUsage
+    ["autovec-suite"] ->
+      runAutovecSuite
     _ -> dieUsage
   where
     writePayload outPath rounds batchSize = do
@@ -97,4 +100,5 @@ dieUsage = do
   putStrLn "  compiler check-ir-lowering <rounds> <batch-size>"
   putStrLn "  compiler autovec-stats"
   putStrLn "  compiler autovec-stats <rounds> <batch-size>"
+  putStrLn "  compiler autovec-suite"
   exitFailure
