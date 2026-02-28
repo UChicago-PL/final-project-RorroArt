@@ -222,16 +222,13 @@ lowerLoadLet ctx st outs memId addr = do
         Right (Just (memOutId, memOut))
       _ ->
         Left "Internal error: validated RLoad outs but found unexpected shape"
-  (st1, addrBundles, addrScratch, _) <- lowerAddr ctx st addr
-  let slot =
-        if isVectorLikeTy (bTy valOut)
-          then VLoad (bScratch valOut) addrScratch
-          else Load (bScratch valOut) addrScratch
+  (st1, loadBundles) <- lowerLoadAddrSlots ctx st valOut addr
+  let
       env1 = M.insert valOutId (valOut {bConst = Nothing}) (bsEnv st1)
       env2 = case memOutMay of
         Nothing -> env1
         Just (memOutId, memOut) -> M.insert memOutId (memOut {bConst = Nothing}) env1
-  Right (st1 {bsEnv = env2}, addrBundles ++ [bundleLoad slot], ())
+  Right (st1 {bsEnv = env2}, loadBundles, ())
 
 lowerStoreLet
   :: LowerCtx kIn kOut
@@ -251,11 +248,7 @@ lowerStoreLet ctx st outs memId addr valId = do
   memTok <- lookupBinding (bsEnv st) "RStore mem token" memId
   ensureMemTy "RStore mem token" (bTy memTok)
   val <- lookupBinding (bsEnv st) "RStore value" valId
-  (st1, addrBundles, addrScratch, _) <- lowerAddr ctx st addr
-  let slot =
-        if isVectorLikeTy (bTy val)
-          then VStore addrScratch (bScratch val)
-          else Store addrScratch (bScratch val)
+  (st1, storeBundles) <- lowerStoreAddrSlots ctx st addr val
   st2 <-
     case outs of
       [] -> Right st1
@@ -266,7 +259,125 @@ lowerStoreLet ctx st outs memId addr valId = do
         Right (st1 {bsEnv = env1})
       _ ->
         Left "Internal error: validated RStore outs but found unexpected shape"
-  Right (st2, addrBundles ++ [bundleStore slot], ())
+  Right (st2, storeBundles, ())
+
+lowerLoadAddrSlots
+  :: LowerCtx kIn kOut
+  -> BuildState
+  -> Binding
+  -> Addr
+  -> Either String (BuildState, [Bundle kOut])
+lowerLoadAddrSlots ctx st valOut addr@(Addr baseId idx) =
+  case idx of
+    IndexVal idxId -> do
+      idxBind <- lookupBinding (bsEnv st) "RLoad IndexVal" idxId
+      if isVectorLikeTy (bTy idxBind)
+        then lowerGatherLoad st valOut baseId idxBind
+        else lowerContiguous
+    _ ->
+      lowerContiguous
+  where
+    lowerContiguous = do
+      (st1, addrBundles, addrScratch, _) <- lowerAddr ctx st addr
+      let slot =
+            if isVectorLikeTy (bTy valOut)
+              then VLoad (bScratch valOut) addrScratch
+              else Load (bScratch valOut) addrScratch
+      Right (st1, addrBundles ++ [bundleLoad slot])
+
+lowerGatherLoad
+  :: BuildState
+  -> Binding
+  -> Id
+  -> Binding
+  -> Either String (BuildState, [Bundle k])
+lowerGatherLoad st valOut baseId idxBind = do
+  (valW, _) <- expectVecTy "RLoad gather value" (bTy valOut)
+  ensureSupportedWidth "RLoad gather value width" valW
+  (idxW, _) <- vectorLikeWidth "RLoad gather IndexVal" (bTy idxBind)
+  ensureSupportedWidth "RLoad gather IndexVal width" idxW
+  when
+    (idxW /= valW)
+    ( Left $
+        "RLoad gather width mismatch: value width "
+          ++ show (widthToInt valW)
+          ++ ", index width "
+          ++ show (widthToInt idxW)
+    )
+  base <- lookupBinding (bsEnv st) "RLoad gather address base" baseId
+  ensurePtrLikeTy "RLoad gather address base" (bTy base)
+  let lanes = widthToInt valW
+      dst = bScratch valOut
+      idx = bScratch idxBind
+      baseS = bScratch base
+  go st 0 lanes dst idx baseS []
+  where
+    go st0 lane laneCount dst idx baseS acc
+      | lane >= laneCount = Right (st0, reverse acc)
+      | otherwise = do
+          (st1, addrTmp) <- allocTemp st0
+          let addB = bundleAlu (Alu Add addrTmp baseS (scratchPlus idx lane))
+              loadB = bundleLoad (Load (scratchPlus dst lane) addrTmp)
+          go st1 (lane + 1) laneCount dst idx baseS (loadB : addB : acc)
+
+lowerStoreAddrSlots
+  :: LowerCtx kIn kOut
+  -> BuildState
+  -> Addr
+  -> Binding
+  -> Either String (BuildState, [Bundle kOut])
+lowerStoreAddrSlots ctx st addr val =
+  case addr of
+    Addr baseId (IndexVal idxId) -> do
+      idxBind <- lookupBinding (bsEnv st) "RStore IndexVal" idxId
+      if isVectorLikeTy (bTy idxBind)
+        then lowerScatterStore st val baseId idxBind
+        else lowerContiguous
+    _ ->
+      lowerContiguous
+  where
+    lowerContiguous = do
+      (st1, addrBundles, addrScratch, _) <- lowerAddr ctx st addr
+      let slot =
+            if isVectorLikeTy (bTy val)
+              then VStore addrScratch (bScratch val)
+              else Store addrScratch (bScratch val)
+      Right (st1, addrBundles ++ [bundleStore slot])
+
+lowerScatterStore
+  :: BuildState
+  -> Binding
+  -> Id
+  -> Binding
+  -> Either String (BuildState, [Bundle k])
+lowerScatterStore st val baseId idxBind = do
+  (valW, _) <- expectVecTy "RStore scatter value" (bTy val)
+  ensureSupportedWidth "RStore scatter value width" valW
+  (idxW, _) <- vectorLikeWidth "RStore scatter IndexVal" (bTy idxBind)
+  ensureSupportedWidth "RStore scatter IndexVal width" idxW
+  when
+    (idxW /= valW)
+    ( Left $
+        "RStore scatter width mismatch: value width "
+          ++ show (widthToInt valW)
+          ++ ", index width "
+          ++ show (widthToInt idxW)
+    )
+  base <- lookupBinding (bsEnv st) "RStore scatter address base" baseId
+  ensurePtrLikeTy "RStore scatter address base" (bTy base)
+  let lanes = widthToInt valW
+      src = bScratch val
+      idx = bScratch idxBind
+      baseS = bScratch base
+  go st 0 lanes src idx baseS []
+  where
+    go st0 lane laneCount src idx baseS acc
+      | lane >= laneCount = Right (st0, reverse acc)
+      | otherwise = do
+          (st1, addrTmp) <- allocTemp st0
+          let addB = bundleAlu (Alu Add addrTmp baseS (scratchPlus idx lane))
+              storeB = bundleStore (Store addrTmp (scratchPlus src lane))
+          go st1 (lane + 1) laneCount src idx baseS (storeB : addB : acc)
 
 lowerRhs
   :: LowerCtx kIn kOut
