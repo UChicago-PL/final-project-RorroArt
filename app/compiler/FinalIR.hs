@@ -100,6 +100,7 @@ data Addr = Addr
 data Rhs
   = RConst !Word32
   | RBin !AluOp !Id !Id
+  | RReduce !AluOp !Id
   | RSelect !Id !Id !Id
   | RCoreId
   | RBroadcast !Width !Id

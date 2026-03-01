@@ -1,13 +1,15 @@
-module AutovecProgramSuite
+module BatchvecProgramSuite
   ( VectorizationGoal(..)
-  , AutovecTarget(..)
-  , autovecTargets
-  , runAutovecSuite
+  , BatchvecTarget(..)
+  , batchvecTargets
+  , runBatchvecSuite
   ) where
 
-import AutoVectorizeFinalIR (AutovecStats(..), autovecBaselineKernel)
+import BaselineDebugPolicy (baselineDebugPolicy)
+import BaselineKernelBatchingFinalIR (buildBaselineKernelBatchingFinalIR)
 import BaselineKernelFinalIR (BaselineDebugKeyRef)
 import BaselineKernelFinalLowering (lowerBaselineKernelFinalIR)
+import BatchVectorizeFinalIR (BatchStats(..), BatchConfig(..), batchVectorizeKernel, defaultBatchConfig)
 import Control.Monad (foldM, forM_)
 import Control.Monad.State.Strict (StateT, execStateT, liftIO, modify', runState)
 import FinalIRBuilder (BuildM, BuilderState(..), addr0, bin, constId, constStmt, freshId, load, memTy, select, store)
@@ -22,70 +24,94 @@ data VectorizationGoal
   | GoalAspirational
   deriving (Show, Eq)
 
-data AutovecTarget = AutovecTarget
+data BatchvecTarget = BatchvecTarget
   { atName :: String
   , atGoal :: VectorizationGoal
   , atDescription :: String
   , atKernel :: FinalIR.Kernel BaselineDebugKeyRef
   }
 
-autovecTargets :: [AutovecTarget]
-autovecTargets =
-  [ AutovecTarget
+batchvecTargets :: [BatchvecTarget]
+batchvecTargets =
+  [ BatchvecTarget
       { atName = "contiguous-add-16"
       , atGoal = GoalReady
       , atDescription = "Simple contiguous map with exact SIMD multiple"
       , atKernel = buildContiguousAddKernel 16
       }
-  , AutovecTarget
+  , BatchvecTarget
       { atName = "contiguous-add-18-tail"
       , atGoal = GoalReady
       , atDescription = "Contiguous map with non-multiple trip count (tail loop expected)"
       , atKernel = buildContiguousAddKernel 18
       }
-  , AutovecTarget
+  , BatchvecTarget
       { atName = "gather-load"
       , atGoal = GoalReady
       , atDescription = "Indirect load through index array, contiguous store"
       , atKernel = buildGatherKernel 32
       }
-  , AutovecTarget
+  , BatchvecTarget
       { atName = "scatter-store"
       , atGoal = GoalReady
       , atDescription = "Contiguous load with indirect scatter store"
       , atKernel = buildScatterKernel 32
       }
-  , AutovecTarget
+  , BatchvecTarget
       { atName = "select-even-lanes"
       , atGoal = GoalReady
       , atDescription = "Vectorizable select/mask style arithmetic in loop body"
       , atKernel = buildSelectKernel 24
       }
-  , AutovecTarget
+  , BatchvecTarget
+      { atName = "if-convert-branch"
+      , atGoal = GoalReady
+      , atDescription = "Loop body with pure If expected to if-convert then vectorize"
+      , atKernel = buildIfKernel 24
+      }
+  , BatchvecTarget
+      { atName = "reduction-add"
+      , atGoal = GoalReady
+      , atDescription = "Associative Add reduction with scalar carry"
+      , atKernel = buildAssociativeReductionKernel Add 32
+      }
+  , BatchvecTarget
+      { atName = "reduction-xor"
+      , atGoal = GoalReady
+      , atDescription = "Associative Xor reduction with scalar carry"
+      , atKernel = buildAssociativeReductionKernel Xor 32
+      }
+  , BatchvecTarget
+      { atName = "baseline-batching-kernel"
+      , atGoal = GoalReady
+      , atDescription = "Batching-oriented baseline kernel variant"
+      , atKernel = buildBaselineKernelBatchingFinalIR 16 256
+      }
+  , BatchvecTarget
       { atName = "contiguous-add-5"
       , atGoal = GoalScalarOnly
       , atDescription = "Trip count < SIMD width (5 < 8), vectorization skipped"
       , atKernel = buildContiguousAddKernel 5
       }
-  , AutovecTarget
+  , BatchvecTarget
       { atName = "contiguous-add-0"
       , atGoal = GoalScalarOnly
       , atDescription = "Degenerate empty loop (trip count 0)"
       , atKernel = buildContiguousAddKernel 0
       }
-  , AutovecTarget
+  , BatchvecTarget
       { atName = "stride-two"
       , atGoal = GoalAspirational
       , atDescription = "Affine strided access (2*i), desirable future vectorization target"
       , atKernel = buildStrideTwoKernel 32
       }
-  , AutovecTarget
+  , BatchvecTarget
       { atName = "prefix-sum-carry"
       , atGoal = GoalAspirational
       , atDescription = "Loop-carried scalar dependence (prefix-style recurrence)"
       , atKernel = buildReductionKernel 32
       }
-  , AutovecTarget
+  , BatchvecTarget
       { atName = "tracewrite-in-loop"
       , atGoal = GoalAspirational
       , atDescription = "Loop containing trace effect alongside load/store"
@@ -93,11 +119,11 @@ autovecTargets =
       }
   ]
 
-runAutovecSuite :: IO ()
-runAutovecSuite = do
-  putStrLn "Autovec FinalIR target suite"
-  putStrLn "=========================="
-  failures <- execStateT (mapM_ runTarget autovecTargets) []
+runBatchvecSuite :: IO ()
+runBatchvecSuite = do
+  putStrLn "Batchvec FinalIR target suite"
+  putStrLn "==========================="
+  failures <- execStateT (mapM_ runTarget batchvecTargets) []
   if null failures
     then putStrLn "\nSuite result: PASS"
     else do
@@ -107,10 +133,12 @@ runAutovecSuite = do
         putStrLn ("  - " ++ name)
       exitFailure
 
-runTarget :: AutovecTarget -> StateT [String] IO ()
+runTarget :: BatchvecTarget -> StateT [String] IO ()
 runTarget target = do
   let kernel = atKernel target
       baselineRes = lowerBaselineKernelFinalIR kernel
+      cfg :: BatchConfig BaselineDebugKeyRef
+      cfg = defaultBatchConfig { bcDebugPolicy = baselineDebugPolicy }
   liftIO $ do
     putStrLn ""
     putStrLn ("Target: " ++ atName target)
@@ -123,20 +151,20 @@ runTarget target = do
       whenReadyFail target
     Right baselineProg -> do
       liftIO $ putStrLn ("Baseline lower: PASS (bundles=" ++ show (length baselineProg) ++ ")")
-      case autovecBaselineKernel kernel of
+      case batchVectorizeKernel cfg kernel of
         Left err -> do
-          liftIO $ putStrLn ("Autovec:        FAIL (" ++ err ++ ")")
+          liftIO $ putStrLn ("Batchvec:       FAIL (" ++ err ++ ")")
           whenReadyFail target
         Right (vecKernel, stats) ->
           case lowerBaselineKernelFinalIR vecKernel of
             Left err -> do
               liftIO $ do
-                putStrLn ("Autovec stats:  " ++ show stats)
+                putStrLn ("Batchvec stats: " ++ show stats)
                 putStrLn ("Vec lower:      FAIL (" ++ err ++ ")")
               whenReadyFail target
             Right vecProg -> do
               liftIO $ do
-                putStrLn ("Autovec stats:  " ++ show stats)
+                putStrLn ("Batchvec stats: " ++ show stats)
                 putStrLn ("Vec lower:      PASS (bundles=" ++ show (length vecProg) ++ ")")
                 putStrLn ("Bundle delta:   " ++ show (length baselineProg - length vecProg))
               case atGoal target of
@@ -157,7 +185,7 @@ runTarget target = do
                     then liftIO (putStrLn "Goal check:     NOTE (vectorized)")
                     else liftIO (putStrLn "Goal check:     TODO (not vectorized yet)")
 
-whenReadyFail :: AutovecTarget -> StateT [String] IO ()
+whenReadyFail :: BatchvecTarget -> StateT [String] IO ()
 whenReadyFail target =
   case atGoal target of
     GoalReady -> modify' (atName target :)
@@ -361,6 +389,114 @@ buildSelectKernel tripCount =
             }
 
     pure ([loop], memOut)
+
+buildIfKernel :: Int -> FinalIR.Kernel BaselineDebugKeyRef
+buildIfKernel tripCount =
+  buildKernelWithMeta [FinalIR.Ptr, FinalIR.Ptr] $ \mem0 metaVals -> do
+    let (inpPtr, outPtr) = expectMeta2 "buildIfKernel" metaVals
+    ub <- constId tripCount
+    zero <- constId 0
+    one <- constId 1
+    salt <- constId 0x9E3779B9
+
+    iv <- freshId
+    memIn <- freshId
+
+    (addrIn, s1) <- bin FinalIR.Ptr Add inpPtr iv
+    (x, mem1, s2) <- load FinalIR.I32 memIn (addr0 addrIn)
+    (cond, s3) <- bin FinalIR.I32 Lt x zero
+
+    y <- freshId
+    (thenVal, thenStmt) <- bin FinalIR.I32 Add x one
+    (elseVal, elseStmt) <- bin FinalIR.I32 Xor x salt
+    let ifStmt =
+          FinalIR.If
+            { FinalIR.ifCond = cond
+            , FinalIR.ifThen =
+                FinalIR.Region
+                  { FinalIR.regionParams = []
+                  , FinalIR.regionStmts = [thenStmt]
+                  , FinalIR.regionYield = [thenVal]
+                  }
+            , FinalIR.ifElse =
+                FinalIR.Region
+                  { FinalIR.regionParams = []
+                  , FinalIR.regionStmts = [elseStmt]
+                  , FinalIR.regionYield = [elseVal]
+                  }
+            , FinalIR.ifOuts = [(y, FinalIR.I32)]
+            }
+
+    (addrOut, s4) <- bin FinalIR.Ptr Add outPtr iv
+    (mem2, s5) <- store mem1 (addr0 addrOut) y
+
+    memOut <- freshId
+    let loop =
+          FinalIR.For
+            { FinalIR.forExec = FinalIR.ExecScalar
+            , FinalIR.forLb = 0
+            , FinalIR.forUb = ub
+            , FinalIR.forStep = 1
+            , FinalIR.forInits = [mem0]
+            , FinalIR.forBody =
+                FinalIR.Region
+                  { FinalIR.regionParams =
+                      [ (iv, FinalIR.I32)
+                      , (memIn, memTy)
+                      ]
+                  , FinalIR.regionStmts = [s1, s2, s3, ifStmt, s4, s5]
+                  , FinalIR.regionYield = [mem2]
+                  }
+            , FinalIR.forOuts = [(memOut, memTy)]
+            }
+
+    pure ([loop], memOut)
+
+buildAssociativeReductionKernel :: AluOp -> Int -> FinalIR.Kernel BaselineDebugKeyRef
+buildAssociativeReductionKernel op tripCount =
+  buildKernelWithMeta [FinalIR.Ptr, FinalIR.Ptr] $ \mem0 metaVals -> do
+    let (inpPtr, outPtr) = expectMeta2 "buildAssociativeReductionKernel" metaVals
+    ub <- constId tripCount
+    accInit <- constId 0
+    outZero <- constId 0
+
+    iv <- freshId
+    memIn <- freshId
+    accIn <- freshId
+
+    (addrIn, s1) <- bin FinalIR.Ptr Add inpPtr iv
+    (x, mem1, s2) <- load FinalIR.I32 memIn (addr0 addrIn)
+    (accNext, s3) <- bin FinalIR.I32 op accIn x
+
+    memOut <- freshId
+    accOut <- freshId
+    let loop =
+          FinalIR.For
+            { FinalIR.forExec = FinalIR.ExecScalar
+            , FinalIR.forLb = 0
+            , FinalIR.forUb = ub
+            , FinalIR.forStep = 1
+            , FinalIR.forInits = [mem0, accInit]
+            , FinalIR.forBody =
+                FinalIR.Region
+                  { FinalIR.regionParams =
+                      [ (iv, FinalIR.I32)
+                      , (memIn, memTy)
+                      , (accIn, FinalIR.I32)
+                      ]
+                  , FinalIR.regionStmts = [s1, s2, s3]
+                  , FinalIR.regionYield = [mem1, accNext]
+                  }
+            , FinalIR.forOuts =
+                [ (memOut, memTy)
+                , (accOut, FinalIR.I32)
+                ]
+            }
+
+    (addrOut, s4) <- bin FinalIR.Ptr Add outPtr outZero
+    (memFinal, s5) <- store memOut (addr0 addrOut) accOut
+
+    pure ([loop, s4, s5], memFinal)
 
 buildStrideTwoKernel :: Int -> FinalIR.Kernel BaselineDebugKeyRef
 buildStrideTwoKernel tripCount =

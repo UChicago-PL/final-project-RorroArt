@@ -9,7 +9,7 @@ import Data.List (sortOn)
 import qualified Data.Map.Strict as M
 import Data.Map.Strict (Map)
 import Data.Word (Word32)
-import FinalIRUtils (collectKernelTypes, isMemTy)
+import FinalIRUtils (collectKernelTypes, isMemTy, widthToInt)
 import ISA
   ( AluOp(..)
   , AluSlot(..)
@@ -402,6 +402,40 @@ lowerRhs _ctx st rhs outBind = case rhs of
             else bundleAlu (Alu op (bScratch outBind) (bScratch a) (bScratch b))
         bOut = outBind {bConst = evalBinConst op (bConst a) (bConst b)}
     Right (st, [slotBundle], bOut)
+
+  RReduce op srcId -> do
+    src <- lookupBinding (bsEnv st) "RReduce source" srcId
+    when
+      (bTy outBind /= I32)
+      ( Left $
+          "RReduce expects scalar I32 output, got "
+            ++ show (bTy outBind)
+      )
+    (w, elemTy) <- expectVecTy "RReduce source" (bTy src)
+    ensureSupportedWidth "RReduce source width" w
+    when
+      (elemTy /= I32)
+      ( Left $
+          "RReduce source element type must be I32, got "
+            ++ show elemTy
+      )
+    when
+      (not (isReduceOpSupported op))
+      ( Left $
+          "RReduce currently supports associative ops {Add,Mul,Xor,And,Or}; got "
+            ++ show op
+      )
+    let lanes = widthToInt w
+    when
+      (lanes <= 0)
+      (Left "RReduce source must have positive width")
+    (st1, zeroBundles, zeroS) <- ensureConstScratch st 0
+    let srcS = bScratch src
+        dstS = bScratch outBind
+        copyLane0 = bundleAlu (Alu Add dstS srcS zeroS)
+        accumLane i = bundleAlu (Alu op dstS dstS (scratchPlus srcS i))
+        reduceBundles = copyLane0 : [accumLane i | i <- [1 .. lanes - 1]]
+    Right (st1, zeroBundles ++ reduceBundles, outBind {bConst = Nothing})
 
   RSelect cId aId bId -> do
     c <- lookupBinding (bsEnv st) "RSelect cond" cId
@@ -1126,6 +1160,16 @@ evalBinConst op (Just a) (Just b) =
     Lt -> Just (if a < b then 1 else 0)
     Eq_ -> Just (if a == b then 1 else 0)
 
+isReduceOpSupported :: AluOp -> Bool
+isReduceOpSupported op =
+  case op of
+    Add -> True
+    Mul -> True
+    Xor -> True
+    And -> True
+    Or -> True
+    _ -> False
+
 scratchPlus :: ScratchAddr -> Int -> ScratchAddr
 scratchPlus (ScratchAddr base) off = ScratchAddr (base + off)
 
@@ -1157,8 +1201,6 @@ tySlots ty = case ty of
     let n = widthToInt w
      in if n > 0 then Right n else Left ("Invalid mask width: " ++ show n)
 
-widthToInt :: Width -> Int
-widthToInt (Width w) = w
 
 bundleAlu :: AluSlot -> Bundle k
 bundleAlu s = emptyBundle {aluSlots = [s]}

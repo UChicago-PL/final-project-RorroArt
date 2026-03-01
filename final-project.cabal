@@ -33,9 +33,15 @@ executable compiler
         BaselineKernel
         PythonInterop
         FinalIR
+        FinalIRUtils
+        FinalIRBuilder
         FinalLowering
         BaselineKernelFinalIR
         BaselineKernelFinalLowering
+        BatchVectorizeFinalIR
+        BaselineDebugPolicy
+        BaselineKernelBatchingFinalIR
+        BatchvecProgramSuite
     build-depends:
         final-project
         , containers >= 0.6 && < 0.7
