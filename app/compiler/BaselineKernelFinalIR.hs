@@ -7,9 +7,11 @@ module BaselineKernelFinalIR
   , baselineKernelFinalIR
   ) where
 
-import Control.Monad.State.Strict
 import Control.Monad (foldM)
+import Control.Monad.State.Strict (runState)
+import FinalIRBuilder (BuildM, BuilderState(..), addr0, bin, constId, constStmt, freshId, load, memTy, select, store)
 import ISA (AluOp(..))
+import qualified Data.Map.Strict as M
 import qualified FinalIR
 
 data BaselineDebugRef
@@ -26,14 +28,6 @@ data BaselineDebugKeyRef
   | KeyNextIdx !BaselineDebugRef !BaselineDebugRef
   | KeyWrappedIdx !BaselineDebugRef !BaselineDebugRef
   deriving (Show, Eq, Ord)
-
-data BuilderState = BuilderState
-  { nextId :: !FinalIR.Id
-  , constMap :: [(Int, FinalIR.Id)]
-  , constDefsRev :: [(Int, FinalIR.Id)]
-  }
-
-type BuildM = State BuilderState
 
 data KernelEnv = KernelEnv
   { envNNodes :: !FinalIR.Id
@@ -56,9 +50,9 @@ baselineKernelFinalIR = buildBaselineKernelFinalIR baselineRounds baselineBatchS
 
 buildBaselineKernelFinalIR :: Int -> Int -> FinalIR.Kernel BaselineDebugKeyRef
 buildBaselineKernelFinalIR rounds batchSize =
-  let initState = BuilderState 0 [] []
+  let initState = BuilderState 0 M.empty []
       ((kernelParams, bodyStmts, finalMem), st) = runState (buildKernelBody rounds batchSize) initState
-      constStmts = map constStmt (reverse (constDefsRev st))
+      constStmts = map constStmt (reverse (bsConstDefsRev st))
       bodyRegion =
         FinalIR.Region
           { FinalIR.regionParams = []
@@ -271,23 +265,6 @@ buildHashStmts roundRef batchRef startVal = do
       let dbg = FinalIR.Eff (FinalIR.EDebugCompare nextVal (KeyHashStage roundRef batchRef stageI))
       pure (acc ++ [s1, s2, s3, dbg], nextVal)
 
-constStmt :: (Int, FinalIR.Id) -> FinalIR.Stmt k
-constStmt (val, outId) =
-  FinalIR.Let
-    { FinalIR.letOuts = [(outId, FinalIR.I32)]
-    , FinalIR.letRhs = FinalIR.RConst (fromIntegral val)
-    }
-
-memTy :: FinalIR.Ty
-memTy = FinalIR.Mem FinalIR.MemAny
-
-addr0 :: FinalIR.Id -> FinalIR.Addr
-addr0 baseId =
-  FinalIR.Addr
-    { FinalIR.addrBase = baseId
-    , FinalIR.addrIndex = FinalIR.IndexAff (FinalIR.IxConst 0)
-    }
-
 loadMeta
   :: FinalIR.Id
   -> FinalIR.Id
@@ -298,100 +275,3 @@ loadMeta metaBase memIn ix ty = do
   ixConst <- constId ix
   load ty memIn (FinalIR.Addr metaBase (FinalIR.IndexVal ixConst))
 
-bin
-  :: FinalIR.Ty
-  -> AluOp
-  -> FinalIR.Id
-  -> FinalIR.Id
-  -> BuildM (FinalIR.Id, FinalIR.Stmt k)
-bin outTy op a b = do
-  out <- freshId
-  let stmt =
-        FinalIR.Let
-          { FinalIR.letOuts = [(out, outTy)]
-          , FinalIR.letRhs = FinalIR.RBin op a b
-          }
-  pure (out, stmt)
-
-select
-  :: FinalIR.Ty
-  -> FinalIR.Id
-  -> FinalIR.Id
-  -> FinalIR.Id
-  -> BuildM (FinalIR.Id, FinalIR.Stmt k)
-select outTy cond trueVal falseVal = do
-  out <- freshId
-  let stmt =
-        FinalIR.Let
-          { FinalIR.letOuts = [(out, outTy)]
-          , FinalIR.letRhs = FinalIR.RSelect cond trueVal falseVal
-          }
-  pure (out, stmt)
-
-load
-  :: FinalIR.Ty
-  -> FinalIR.Id
-  -> FinalIR.Addr
-  -> BuildM (FinalIR.Id, FinalIR.Id, FinalIR.Stmt k)
-load outTy memIn addr = do
-  outVal <- freshId
-  memOut <- freshId
-  let stmt =
-        FinalIR.Let
-          { FinalIR.letOuts =
-              [ (outVal, outTy)
-              , (memOut, memTy)
-              ]
-          , FinalIR.letRhs =
-              FinalIR.RLoad
-                { FinalIR.memIn = memIn
-                , FinalIR.loadAddr = addr
-                }
-          }
-  pure (outVal, memOut, stmt)
-
-store
-  :: FinalIR.Id
-  -> FinalIR.Addr
-  -> FinalIR.Id
-  -> BuildM (FinalIR.Id, FinalIR.Stmt k)
-store memIn addr val = do
-  memOut <- freshId
-  let stmt =
-        FinalIR.Let
-          { FinalIR.letOuts = [(memOut, memTy)]
-          , FinalIR.letRhs =
-              FinalIR.RStore
-                { FinalIR.memIn = memIn
-                , FinalIR.storeAddr = addr
-                , FinalIR.storeVal = val
-                }
-          }
-  pure (memOut, stmt)
-
-freshId :: BuildM FinalIR.Id
-freshId = do
-  st <- get
-  let thisId = nextId st
-  put st {nextId = thisId + 1}
-  pure thisId
-
-constId :: Int -> BuildM FinalIR.Id
-constId val = do
-  st <- get
-  case lookupConst val (constMap st) of
-    Just outId -> pure outId
-    Nothing -> do
-      outId <- freshId
-      modify' $ \s ->
-        s
-          { constMap = (val, outId) : constMap s
-          , constDefsRev = (val, outId) : constDefsRev s
-          }
-      pure outId
-
-lookupConst :: Int -> [(Int, FinalIR.Id)] -> Maybe FinalIR.Id
-lookupConst _ [] = Nothing
-lookupConst key ((k, v) : rest)
-  | key == k = Just v
-  | otherwise = lookupConst key rest

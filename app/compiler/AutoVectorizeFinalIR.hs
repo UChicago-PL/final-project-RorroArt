@@ -25,6 +25,7 @@ import FinalIR
   , Ty(..)
   , Width(..)
   )
+import FinalIRUtils (collectKernelTypes, isMemTy)
 import ISA (AluOp(..))
 
 data AutovecStats = AutovecStats
@@ -160,60 +161,67 @@ dropDeadPtrAdds stmts = filter keep stmts
       Let [(out, Ptr)] (RBin Add _ _) -> S.member out uses
       _ -> True
 
+--------------------------------------------------------------------------------
+-- IR identifier extraction
+--
+-- Leaf-node extractors (rhsUses, effUses, …) are shared; the two higher-level
+-- families differ only in whether definition sites are included:
+--   collectUses / stmtUses / regionUses  — referenced IDs only (for DCE)
+--   allIdsKernel / allIdsRegion / allIdsStmt — all IDs (for fresh-name generation)
+--------------------------------------------------------------------------------
+
+rhsUses :: Rhs -> [Id]
+rhsUses rhs = case rhs of
+  RConst _           -> []
+  RBin _ a b         -> [a, b]
+  RSelect c a b      -> [c, a, b]
+  RCoreId            -> []
+  RBroadcast _ s     -> [s]
+  RMultiplyAdd a b c -> [a, b, c]
+  RLoad m addr       -> m : addrUses addr
+  RStore m addr v    -> m : v : addrUses addr
+
+effUses :: Effect k -> [Id]
+effUses eff = case eff of
+  EPause             -> []
+  ETraceWrite v      -> [v]
+  EDebugCompare v _  -> [v]
+  EDebugCompareV v _ -> [v]
+  EDebugComment _    -> []
+  EHalt              -> []
+
+addrUses :: Addr -> [Id]
+addrUses (Addr b idx) = b : indexUses idx
+
+indexUses :: Index -> [Id]
+indexUses idx = case idx of
+  IndexVal v -> [v]
+  IndexAff ix -> ixUses ix
+
+ixUses :: Ix -> [Id]
+ixUses ix = case ix of
+  IxConst _ -> []
+  IxVar v   -> [v]
+  IxLane    -> []
+  IxAdd a b -> ixUses a ++ ixUses b
+  IxMul _ x -> ixUses x
+
+-- Uses only (no definitions)
+
 collectUses :: [Stmt k] -> S.Set Id
-collectUses = foldl (flip collectUsesStmt) S.empty
+collectUses = foldMap stmtUses
 
-collectUsesStmt :: Stmt k -> S.Set Id -> S.Set Id
-collectUsesStmt stmt acc = case stmt of
-  Let _ rhs -> collectUsesRhs rhs acc
-  Eff eff -> collectUsesEffect eff acc
-  If cond t e _ ->
-    let acc1 = S.insert cond acc
-        acc2 = collectUses (regionStmts t) `S.union` acc1
-        acc3 = collectUses (regionStmts e) `S.union` acc2
-        acc4 = foldl (flip S.insert) acc3 (regionYield t)
-     in foldl (flip S.insert) acc4 (regionYield e)
+stmtUses :: Stmt k -> S.Set Id
+stmtUses stmt = case stmt of
+  Let _ rhs      -> S.fromList (rhsUses rhs)
+  Eff eff        -> S.fromList (effUses eff)
+  If c t e _     -> S.insert c (regionUses t <> regionUses e)
   For _ _ ub _ inits body _ ->
-    let acc1 = S.insert ub acc
-        acc2 = foldl (flip S.insert) acc1 inits
-        acc3 = collectUses (regionStmts body) `S.union` acc2
-     in foldl (flip S.insert) acc3 (regionYield body)
+    S.insert ub (S.fromList inits <> regionUses body)
 
-collectUsesRhs :: Rhs -> S.Set Id -> S.Set Id
-collectUsesRhs rhs acc = case rhs of
-  RConst _ -> acc
-  RBin _ a b -> S.insert a (S.insert b acc)
-  RSelect c a b -> S.insert c (S.insert a (S.insert b acc))
-  RCoreId -> acc
-  RBroadcast _ s -> S.insert s acc
-  RMultiplyAdd a b c -> S.insert a (S.insert b (S.insert c acc))
-  RLoad m addr -> S.insert m (collectUsesAddr addr acc)
-  RStore m addr v -> S.insert m (S.insert v (collectUsesAddr addr acc))
-
-collectUsesEffect :: Effect k -> S.Set Id -> S.Set Id
-collectUsesEffect eff acc = case eff of
-  EPause -> acc
-  ETraceWrite v -> S.insert v acc
-  EDebugCompare v _ -> S.insert v acc
-  EDebugCompareV v _ -> S.insert v acc
-  EDebugComment _ -> acc
-  EHalt -> acc
-
-collectUsesAddr :: Addr -> S.Set Id -> S.Set Id
-collectUsesAddr (Addr b ix) acc = S.insert b (collectUsesIndex ix acc)
-
-collectUsesIndex :: Index -> S.Set Id -> S.Set Id
-collectUsesIndex idx acc = case idx of
-  IndexVal v -> S.insert v acc
-  IndexAff ix -> collectUsesIx ix acc
-
-collectUsesIx :: Ix -> S.Set Id -> S.Set Id
-collectUsesIx ix acc = case ix of
-  IxConst _ -> acc
-  IxVar v -> S.insert v acc
-  IxLane -> acc
-  IxAdd a b -> collectUsesIx a (collectUsesIx b acc)
-  IxMul _ x -> collectUsesIx x acc
+regionUses :: Region k -> S.Set Id
+regionUses Region{..} =
+  foldMap stmtUses regionStmts <> S.fromList regionYield
 
 --------------------------------------------------------------------------------
 -- Loop vectorization
@@ -261,7 +269,6 @@ tryVectorizeLoop tyEnv constEnv stmt@(For ex lb ub step inits body outs) = do
         ex == ExecScalar
           && step == 1
           && all isSimpleStmt (regionStmts body)
-          && not (any hasControlFlow (regionStmts body))
           && loopVectorizationLegal constEnv body
       maybeUb = M.lookup ub constEnv
   case (canVectorize, maybeUb) of
@@ -323,11 +330,6 @@ loopVectorizationLegal constEnv body =
 carriesAreMem :: Region k -> Bool
 carriesAreMem body =
   all (isMemTy . snd) (drop 1 (regionParams body))
-
-isMemTy :: Ty -> Bool
-isMemTy ty = case ty of
-  Mem _ -> True
-  _ -> False
 
 hasTraceWrite :: [Stmt k] -> Bool
 hasTraceWrite = any isTrace
@@ -486,15 +488,9 @@ scaleLane k form = case form of
 
 isSimpleStmt :: Stmt k -> Bool
 isSimpleStmt s = case s of
-  Let _ _ -> True
-  Eff _ -> True
-  _ -> False
-
-hasControlFlow :: Stmt k -> Bool
-hasControlFlow s = case s of
-  If {} -> True
-  For {} -> True
-  _ -> False
+  Let {} -> True
+  Eff {} -> True
+  _      -> False
 
 freshOut :: Ty -> AVM (Id, Ty)
 freshOut ty = do
@@ -604,129 +600,138 @@ transformLet outs rhs = case rhs of
   RStore mem addr val -> transformStore outs mem addr val
   RBin op a b -> transformBin outs op a b
   RSelect c a b -> transformSelect outs c a b
-  RConst w -> do
-    when (length outs /= 1) (throwErr "vectorize: RConst expects 1 output")
-    let (oldOut, outTy) = head outs
-    newOut <- freshVecId
-    let info = VInfo newOut outTy MUniform
-    setInfo oldOut info
-    pure [Let [(newOut, outTy)] (RConst w)]
-  RCoreId -> do
-    when (length outs /= 1) (throwErr "vectorize: RCoreId expects 1 output")
-    let (oldOut, outTy) = head outs
-    newOut <- freshVecId
-    let info = VInfo newOut outTy MUniform
-    setInfo oldOut info
-    pure [Let [(newOut, outTy)] RCoreId]
-  RBroadcast w src -> do
-    when (length outs /= 1) (throwErr "vectorize: RBroadcast expects 1 output")
-    srcI <- infoFor src
-    let (oldOut, outTy) = head outs
-    newOut <- freshVecId
-    setInfo oldOut (VInfo newOut outTy MVec)
-    pure [Let [(newOut, outTy)] (RBroadcast w (viId srcI))]
-  RMultiplyAdd a b c -> do
-    when (length outs /= 1) (throwErr "vectorize: RMultiplyAdd expects 1 output")
-    ai <- infoFor a
-    bi <- infoFor b
-    ci <- infoFor c
-    let (oldOut, outTy) = head outs
-    newOut <- freshVecId
-    setInfo oldOut (VInfo newOut outTy MVec)
-    pure [Let [(newOut, outTy)] (RMultiplyAdd (viId ai) (viId bi) (viId ci))]
+  RConst w -> case outs of
+    [(oldOut, outTy)] -> do
+      newOut <- freshVecId
+      setInfo oldOut (VInfo newOut outTy MUniform)
+      pure [Let [(newOut, outTy)] (RConst w)]
+    _ -> throwErr "vectorize: RConst expects 1 output"
+  RCoreId -> case outs of
+    [(oldOut, outTy)] -> do
+      newOut <- freshVecId
+      setInfo oldOut (VInfo newOut outTy MUniform)
+      pure [Let [(newOut, outTy)] RCoreId]
+    _ -> throwErr "vectorize: RCoreId expects 1 output"
+  RBroadcast w src -> case outs of
+    [(oldOut, outTy)] -> do
+      srcI <- infoFor src
+      newOut <- freshVecId
+      setInfo oldOut (VInfo newOut outTy MVec)
+      pure [Let [(newOut, outTy)] (RBroadcast w (viId srcI))]
+    _ -> throwErr "vectorize: RBroadcast expects 1 output"
+  RMultiplyAdd a b c -> case outs of
+    [(oldOut, outTy)] -> do
+      ai <- infoFor a
+      bi <- infoFor b
+      ci <- infoFor c
+      newOut <- freshVecId
+      setInfo oldOut (VInfo newOut outTy MVec)
+      pure [Let [(newOut, outTy)] (RMultiplyAdd (viId ai) (viId bi) (viId ci))]
+    _ -> throwErr "vectorize: RMultiplyAdd expects 1 output"
 
 transformLoad :: [(Id, Ty)] -> Id -> Addr -> VecM [Stmt BaselineDebugKeyRef]
-transformLoad outs mem addr = do
-  when (null outs || length outs > 2) (throwErr "vectorize: RLoad output arity unsupported")
-  memI <- infoFor mem
-  (addr', idxMode) <- rewriteAddr addr
-  let (oldVal, oldValTy) = head outs
-      vecValTy = Vec vecWidth oldValTy
-      isI32 = oldValTy == I32
-      shouldVec = isI32 && (idxMode == MLaneBase || idxMode == MVec)
-      newValTy = if shouldVec then vecValTy else oldValTy
-      newMode = if shouldVec then MVec else MUniform
-  newVal <- freshVecId
-  newMemOut <- if length outs == 2 then Just <$> freshVecId else pure Nothing
-  let outs' = [(newVal, newValTy)] ++ maybe [] (\mOut -> [(mOut, snd (outs !! 1))]) newMemOut
-      stmt' = Let outs' (RLoad (viId memI) addr')
-  setInfo oldVal (VInfo newVal newValTy newMode)
-  case (length outs, newMemOut) of
-    (2, Just mOut) ->
-      setInfo (fst (outs !! 1)) (VInfo mOut (snd (outs !! 1)) MUniform)
-    _ -> pure ()
-  when shouldVec $ do
-    case idxMode of
-      MLaneBase -> addStatsVec (\s -> s { vectorLoads = vectorLoads s + 1 })
-      MVec -> addStatsVec (\s -> s { gatherLoads = gatherLoads s + 1 })
-      _ -> pure ()
-  pure [stmt']
+transformLoad outs mem addr = case outs of
+  [(oldVal, oldValTy)] ->
+    doLoad oldVal oldValTy Nothing
+  [(oldVal, oldValTy), (oldMem, oldMemTy)] ->
+    doLoad oldVal oldValTy (Just (oldMem, oldMemTy))
+  _ -> throwErr "vectorize: RLoad output arity unsupported"
+  where
+    doLoad oldVal oldValTy memOutInfo = do
+      memI <- infoFor mem
+      (addr', idxMode) <- rewriteAddr addr
+      let vecValTy = Vec vecWidth oldValTy
+          shouldVec = oldValTy == I32 && (idxMode == MLaneBase || idxMode == MVec)
+          newValTy = if shouldVec then vecValTy else oldValTy
+          newMode = if shouldVec then MVec else MUniform
+      newVal <- freshVecId
+      memOuts <- case memOutInfo of
+        Just (oldMem, oldMemTy) -> do
+          mOut <- freshVecId
+          setInfo oldMem (VInfo mOut oldMemTy MUniform)
+          pure [(mOut, oldMemTy)]
+        Nothing ->
+          pure []
+      let stmt' = Let ((newVal, newValTy) : memOuts) (RLoad (viId memI) addr')
+      setInfo oldVal (VInfo newVal newValTy newMode)
+      when shouldVec $
+        case idxMode of
+          MLaneBase -> addStatsVec (\s -> s { vectorLoads = vectorLoads s + 1 })
+          MVec -> addStatsVec (\s -> s { gatherLoads = gatherLoads s + 1 })
+          _ -> pure ()
+      pure [stmt']
 
 transformStore :: [(Id, Ty)] -> Id -> Addr -> Id -> VecM [Stmt BaselineDebugKeyRef]
-transformStore outs mem addr val = do
-  when (length outs > 1) (throwErr "vectorize: RStore output arity unsupported")
-  memI <- infoFor mem
-  valI <- infoFor val
-  (addr', idxMode) <- rewriteAddr addr
-  newMemOut <- if null outs then pure Nothing else Just <$> freshVecId
-  let outs' = maybe [] (\mOut -> [(mOut, snd (head outs))]) newMemOut
-      stmt' = Let outs' (RStore (viId memI) addr' (viId valI))
-  case newMemOut of
-    Just mOut -> setInfo (fst (head outs)) (VInfo mOut (snd (head outs)) MUniform)
-    Nothing -> pure ()
-  when (viMode valI == MVec && (idxMode == MLaneBase || idxMode == MVec)) $
-    addStatsVec (\s -> s { vectorStores = vectorStores s + 1 })
-  pure [stmt']
+transformStore outs mem addr val = case outs of
+  [] -> doStore Nothing
+  [(oldMem, oldMemTy)] -> doStore (Just (oldMem, oldMemTy))
+  _ -> throwErr "vectorize: RStore output arity unsupported"
+  where
+    doStore memOutInfo = do
+      memI <- infoFor mem
+      valI <- infoFor val
+      (addr', idxMode) <- rewriteAddr addr
+      memOuts <- case memOutInfo of
+        Just (oldMem, oldMemTy) -> do
+          mOut <- freshVecId
+          setInfo oldMem (VInfo mOut oldMemTy MUniform)
+          pure [(mOut, oldMemTy)]
+        Nothing ->
+          pure []
+      let stmt' = Let memOuts (RStore (viId memI) addr' (viId valI))
+      when (viMode valI == MVec && (idxMode == MLaneBase || idxMode == MVec)) $
+        addStatsVec (\s -> s { vectorStores = vectorStores s + 1 })
+      pure [stmt']
 
 transformBin :: [(Id, Ty)] -> AluOp -> Id -> Id -> VecM [Stmt BaselineDebugKeyRef]
-transformBin outs op a b = do
-  when (length outs /= 1) (throwErr "vectorize: RBin expects 1 output")
-  ai <- infoFor a
-  bi <- infoFor b
-  let (oldOut, outTy) = head outs
-      shouldVec = outTy == I32 && (viMode ai == MVec || viMode bi == MVec)
-  if shouldVec
-    then do
-      (aVec, preA) <- ensureVec ai
-      (bVec, preB) <- ensureVec bi
-      out <- freshVecId
-      let outTy' = Vec vecWidth I32
-      setInfo oldOut (VInfo out outTy' MVec)
-      pure (preA ++ preB ++ [Let [(out, outTy')] (RBin op aVec bVec)])
-    else do
-      out <- freshVecId
-      let modeOut =
-            if outTy == I32 && (viMode ai == MLaneBase || viMode bi == MLaneBase)
-              then MLaneBase
-              else MUniform
-      setInfo oldOut (VInfo out outTy modeOut)
-      pure [Let [(out, outTy)] (RBin op (viId ai) (viId bi))]
+transformBin outs op a b = case outs of
+  [(oldOut, outTy)] -> do
+    ai <- infoFor a
+    bi <- infoFor b
+    let shouldVec = outTy == I32 && (viMode ai == MVec || viMode bi == MVec)
+    if shouldVec
+      then do
+        (aVec, preA) <- ensureVec ai
+        (bVec, preB) <- ensureVec bi
+        out <- freshVecId
+        let outTy' = Vec vecWidth I32
+        setInfo oldOut (VInfo out outTy' MVec)
+        pure (preA ++ preB ++ [Let [(out, outTy')] (RBin op aVec bVec)])
+      else do
+        out <- freshVecId
+        let modeOut =
+              if outTy == I32 && (viMode ai == MLaneBase || viMode bi == MLaneBase)
+                then MLaneBase
+                else MUniform
+        setInfo oldOut (VInfo out outTy modeOut)
+        pure [Let [(out, outTy)] (RBin op (viId ai) (viId bi))]
+  _ -> throwErr "vectorize: RBin expects 1 output"
 
 transformSelect :: [(Id, Ty)] -> Id -> Id -> Id -> VecM [Stmt BaselineDebugKeyRef]
-transformSelect outs c a b = do
-  when (length outs /= 1) (throwErr "vectorize: RSelect expects 1 output")
-  ci <- infoFor c
-  ai <- infoFor a
-  bi <- infoFor b
-  let (oldOut, outTy) = head outs
-      shouldVec = outTy == I32 && any (== MVec) [viMode ci, viMode ai, viMode bi]
-  if shouldVec
-    then do
-      (cVec, preC) <- ensureVec ci
-      (aVec, preA) <- ensureVec ai
-      (bVec, preB) <- ensureVec bi
-      out <- freshVecId
-      let outTy' = Vec vecWidth I32
-      setInfo oldOut (VInfo out outTy' MVec)
-      pure (preC ++ preA ++ preB ++ [Let [(out, outTy')] (RSelect cVec aVec bVec)])
-    else do
-      out <- freshVecId
-      let modeOut =
-            if outTy == I32 && any (== MLaneBase) [viMode ci, viMode ai, viMode bi]
-              then MLaneBase
-              else MUniform
-      setInfo oldOut (VInfo out outTy modeOut)
-      pure [Let [(out, outTy)] (RSelect (viId ci) (viId ai) (viId bi))]
+transformSelect outs c a b = case outs of
+  [(oldOut, outTy)] -> do
+    ci <- infoFor c
+    ai <- infoFor a
+    bi <- infoFor b
+    let shouldVec = outTy == I32 && any (== MVec) [viMode ci, viMode ai, viMode bi]
+    if shouldVec
+      then do
+        (cVec, preC) <- ensureVec ci
+        (aVec, preA) <- ensureVec ai
+        (bVec, preB) <- ensureVec bi
+        out <- freshVecId
+        let outTy' = Vec vecWidth I32
+        setInfo oldOut (VInfo out outTy' MVec)
+        pure (preC ++ preA ++ preB ++ [Let [(out, outTy')] (RSelect cVec aVec bVec)])
+      else do
+        out <- freshVecId
+        let modeOut =
+              if outTy == I32 && any (== MLaneBase) [viMode ci, viMode ai, viMode bi]
+                then MLaneBase
+                else MUniform
+        setInfo oldOut (VInfo out outTy modeOut)
+        pure [Let [(out, outTy)] (RSelect (viId ci) (viId ai) (viId bi))]
+  _ -> throwErr "vectorize: RSelect expects 1 output"
 
 ensureVec :: VInfo -> VecM (Id, [Stmt BaselineDebugKeyRef])
 ensureVec VInfo{..}
@@ -834,99 +839,32 @@ updateConstEnv env stmt = case stmt of
   Let [(out, I32)] (RConst w) -> M.insert out (fromIntegral w) env
   _ -> env
 
+-- All IDs: both definitions and uses (for fresh-name generation)
+
 maxIdKernel :: Kernel k -> Int
 maxIdKernel kernel =
-  case S.toList (collectIdsKernel kernel) of
-    [] -> -1
-    xs -> maximum [ n | Id n <- xs ]
+  case S.lookupMax (allIdsKernel kernel) of
+    Nothing     -> -1
+    Just (Id n) -> n
 
-collectIdsKernel :: Kernel k -> S.Set Id
-collectIdsKernel Kernel{..} =
-  foldl (flip S.insert) (collectIdsRegion kernelBody) (map fst kernelParams)
+allIdsKernel :: Kernel k -> S.Set Id
+allIdsKernel Kernel{..} =
+  S.fromList (map fst kernelParams) <> allIdsRegion kernelBody
 
-collectIdsRegion :: Region k -> S.Set Id
-collectIdsRegion Region{..} =
-  let paramIds = map fst regionParams
-      stmtIds = foldl (flip collectIdsStmt) S.empty regionStmts
-   in foldl (flip S.insert) (foldl (flip S.insert) stmtIds paramIds) regionYield
+allIdsRegion :: Region k -> S.Set Id
+allIdsRegion Region{..} =
+  S.fromList (map fst regionParams)
+    <> foldMap allIdsStmt regionStmts
+    <> S.fromList regionYield
 
-collectIdsStmt :: Stmt k -> S.Set Id -> S.Set Id
-collectIdsStmt stmt acc = case stmt of
-  Let outs rhs -> foldl (flip S.insert) (collectIdsRhs rhs acc) (map fst outs)
-  Eff eff -> collectIdsEff eff acc
+allIdsStmt :: Stmt k -> S.Set Id
+allIdsStmt stmt = case stmt of
+  Let outs rhs ->
+    S.fromList (map fst outs) <> S.fromList (rhsUses rhs)
+  Eff eff ->
+    S.fromList (effUses eff)
   If c t e outs ->
-    foldl (flip S.insert)
-      (S.insert c (collectIdsRegion t `S.union` collectIdsRegion e `S.union` acc))
-      (map fst outs)
+    S.fromList (map fst outs) <> S.insert c (allIdsRegion t <> allIdsRegion e)
   For _ _ ub _ inits body outs ->
-    foldl
-      (flip S.insert)
-      (foldl (flip S.insert) (collectIdsRegion body `S.union` S.insert ub acc) inits)
-      (map fst outs)
+    S.fromList (map fst outs) <> S.insert ub (S.fromList inits <> allIdsRegion body)
 
-collectIdsRhs :: Rhs -> S.Set Id -> S.Set Id
-collectIdsRhs rhs acc = case rhs of
-  RConst _ -> acc
-  RBin _ a b -> S.insert a (S.insert b acc)
-  RSelect c a b -> S.insert c (S.insert a (S.insert b acc))
-  RCoreId -> acc
-  RBroadcast _ s -> S.insert s acc
-  RMultiplyAdd a b c -> S.insert a (S.insert b (S.insert c acc))
-  RLoad m addr -> S.insert m (collectIdsAddr addr acc)
-  RStore m addr v -> S.insert m (S.insert v (collectIdsAddr addr acc))
-
-collectIdsEff :: Effect k -> S.Set Id -> S.Set Id
-collectIdsEff eff acc = case eff of
-  EPause -> acc
-  ETraceWrite v -> S.insert v acc
-  EDebugCompare v _ -> S.insert v acc
-  EDebugCompareV v _ -> S.insert v acc
-  EDebugComment _ -> acc
-  EHalt -> acc
-
-collectIdsAddr :: Addr -> S.Set Id -> S.Set Id
-collectIdsAddr (Addr b ix) acc = S.insert b (collectIdsIndex ix acc)
-
-collectIdsIndex :: Index -> S.Set Id -> S.Set Id
-collectIdsIndex idx acc = case idx of
-  IndexVal v -> S.insert v acc
-  IndexAff ix -> collectIdsIx ix acc
-
-collectIdsIx :: Ix -> S.Set Id -> S.Set Id
-collectIdsIx ix acc = case ix of
-  IxConst _ -> acc
-  IxVar v -> S.insert v acc
-  IxLane -> acc
-  IxAdd a b -> collectIdsIx a (collectIdsIx b acc)
-  IxMul _ x -> collectIdsIx x acc
-
-collectKernelTypes :: Kernel k -> Either String TyEnv
-collectKernelTypes kernel = do
-  m0 <- foldM insertTy M.empty (kernelParams kernel)
-  collectRegionTypes m0 (kernelBody kernel)
-
-collectRegionTypes :: TyEnv -> Region k -> Either String TyEnv
-collectRegionTypes m0 region = do
-  m1 <- foldM insertTy m0 (regionParams region)
-  foldM collectStmtTypes m1 (regionStmts region)
-
-collectStmtTypes :: TyEnv -> Stmt k -> Either String TyEnv
-collectStmtTypes m stmt = case stmt of
-  Let outs _ -> foldM insertTy m outs
-  Eff _ -> Right m
-  If _ t e outs -> do
-    m1 <- foldM insertTy m outs
-    m2 <- collectRegionTypes m1 t
-    collectRegionTypes m2 e
-  For _ _ _ _ _ body outs -> do
-    m1 <- foldM insertTy m outs
-    collectRegionTypes m1 body
-
-insertTy :: TyEnv -> (Id, Ty) -> Either String TyEnv
-insertTy m (i, ty) =
-  case M.lookup i m of
-    Nothing -> Right (M.insert i ty m)
-    Just oldTy ->
-      if oldTy == ty
-        then Right m
-        else Left ("Type mismatch for " ++ show i ++ ": saw both " ++ show oldTy ++ " and " ++ show ty)
