@@ -16,11 +16,14 @@ library
     hs-source-dirs:   src
     exposed-modules:
         Lib
+        ISA
 
 executable simulator
     import:           shared
     hs-source-dirs:   app/simulator
     main-is:          Main.hs
+    other-modules:
+        Parser
     build-depends:
         final-project
 
@@ -29,7 +32,6 @@ executable compiler
     hs-source-dirs:   app/compiler
     main-is:          Main.hs
     other-modules:
-        ISA
         BaselineKernel
         PythonInterop
         FinalIR

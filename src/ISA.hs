@@ -14,6 +14,10 @@ module ISA
   , StoreSlot(..)
   , FlowSlot(..)
   , DebugSlot(..)
+  , Engine(..)
+  , opcodeArity
+  , parseAluOp
+  , renderAluOp
   ) where
 
 import Data.Word (Word32)
@@ -44,7 +48,7 @@ data AluOp
   = Add | Sub | Mul | Div | Cdiv
   | Xor | And | Or | Shl | Shr | Mod
   | Lt | Eq_
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
 -- ("op", dest, a1, a2)
 data AluSlot = Alu AluOp ScratchAddr ScratchAddr ScratchAddr
@@ -85,5 +89,83 @@ data FlowSlot
 data DebugSlot k
   = Compare ScratchAddr k
   | VCompare ScratchAddr [k]
-  | DebugIgnored String      -- machine ignores other debug ops (e.g. "comment")
+  | DebugIgnored String
   deriving (Show, Eq, Functor)
+
+data Engine = EngineAlu | EngineValu | EngineLoad | EngineStore | EngineFlow
+  deriving (Show, Eq, Ord)
+
+-- | Expected argument counts per opcode, excluding the opcode string itself.
+opcodeArity :: Engine -> String -> Maybe Int
+opcodeArity engine op = case engine of
+  EngineAlu ->
+    case parseAluOp op of
+      Just _ -> Just 3
+      Nothing -> Nothing
+  EngineValu ->
+    case op of
+      "vbroadcast" -> Just 2
+      "multiply_add" -> Just 4
+      _ ->
+        case parseAluOp op of
+          Just _ -> Just 3
+          Nothing -> Nothing
+  EngineLoad ->
+    case op of
+      "load" -> Just 2
+      "load_offset" -> Just 3
+      "vload" -> Just 2
+      "const" -> Just 2
+      _ -> Nothing
+  EngineStore ->
+    case op of
+      "store" -> Just 2
+      "vstore" -> Just 2
+      _ -> Nothing
+  EngineFlow ->
+    case op of
+      "select" -> Just 4
+      "add_imm" -> Just 3
+      "vselect" -> Just 4
+      "halt" -> Just 0
+      "pause" -> Just 0
+      "trace_write" -> Just 1
+      "cond_jump" -> Just 2
+      "cond_jump_rel" -> Just 2
+      "jump" -> Just 1
+      "jump_indirect" -> Just 1
+      "coreid" -> Just 1
+      _ -> Nothing
+
+parseAluOp :: String -> Maybe AluOp
+parseAluOp op = case op of
+  "+" -> Just Add
+  "-" -> Just Sub
+  "*" -> Just Mul
+  "//" -> Just Div
+  "cdiv" -> Just Cdiv
+  "^" -> Just Xor
+  "&" -> Just And
+  "|" -> Just Or
+  "<<" -> Just Shl
+  ">>" -> Just Shr
+  "%" -> Just Mod
+  "<" -> Just Lt
+  "==" -> Just Eq_
+  _ -> Nothing
+
+renderAluOp :: AluOp -> String
+renderAluOp op = case op of
+  Add -> "+"
+  Sub -> "-"
+  Mul -> "*"
+  Div -> "//"
+  Cdiv -> "cdiv"
+  Xor -> "^"
+  And -> "&"
+  Or -> "|"
+  Shl -> "<<"
+  Shr -> ">>"
+  Mod -> "%"
+  Lt -> "<"
+  Eq_ -> "=="
