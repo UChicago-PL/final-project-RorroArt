@@ -94,7 +94,8 @@ data MachineState = MachineState
 data StepSnapshot = StepSnapshot
   { ssPc :: !ISA.ProgAddr,
     ssScratch :: !(IntMap Word32),
-    ssMem :: !(IntMap Word32)
+    ssMem :: !(IntMap Word32),
+    ssEnablePause :: !Bool
   }
   deriving (Show, Eq)
 
@@ -239,12 +240,13 @@ bundleCountsAsCycle bundle =
 
 -- Cycle semantics (snapshot + deferred writes)
 
-buildSnapshot :: MachineState -> StepSnapshot
-buildSnapshot ms =
+buildSnapshot :: SimConfig -> MachineState -> StepSnapshot
+buildSnapshot cfg ms =
   StepSnapshot
     { ssPc = csPc (msCore ms),
       ssScratch = csScratch (msCore ms),
-      ssMem = msMem ms
+      ssMem = msMem ms,
+      ssEnablePause = scEnablePause cfg
     }
 
 emptyPendingWrites :: PendingWrites
@@ -258,8 +260,9 @@ emptyPendingWrites =
 
 executeBundle :: ISA.Bundle () -> SimM ()
 executeBundle bundle = do
+  cfg <- ask
   ms <- get
-  let snap = buildSnapshot ms
+  let snap = buildSnapshot cfg ms
   case runStateT (runReaderT (executeBundleSlots bundle) snap) emptyPendingWrites of
     Left err -> lift (lift (throwError err))
     Right (_, pw) -> commitPendingWrites pw
@@ -475,7 +478,9 @@ execHalt :: StepM ()
 execHalt = setCoreRunState CoreStopped
 
 execPause :: StepM ()
-execPause = setCoreRunState CorePaused
+execPause = do
+  StepSnapshot {ssEnablePause} <- ask
+  when ssEnablePause (setCoreRunState CorePaused)
 
 execTraceWrite :: ISA.ScratchAddr -> StepM ()
 execTraceWrite _ = pure () -- NoOp for now
