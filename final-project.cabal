@@ -23,9 +23,13 @@ executable simulator
     hs-source-dirs:   app/simulator
     main-is:          Main.hs
     other-modules:
+        Sim
         Parser
     build-depends:
         final-project
+        , containers >= 0.6 && < 0.7
+        , mtl >= 2.3 && < 2.4
+        , bytestring >= 0.11 && < 0.13
 
 executable compiler
     import:           shared

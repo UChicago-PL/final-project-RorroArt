@@ -15,6 +15,10 @@ module ISA
   , FlowSlot(..)
   , DebugSlot(..)
   , Engine(..)
+  , SlotLimits(..)
+  , MachineConfig(..)
+  , defaultSlotLimits
+  , defaultMachineConfig
   , opcodeArity
   , parseAluOp
   , renderAluOp
@@ -94,6 +98,36 @@ data DebugSlot k
 
 data Engine = EngineAlu | EngineValu | EngineLoad | EngineStore | EngineFlow
   deriving (Show, Eq, Ord)
+
+data SlotLimits = SlotLimits
+  { slAlu :: !Int
+  , slValu :: !Int
+  , slLoad :: !Int
+  , slStore :: !Int
+  , slFlow :: !Int
+  , slDebug :: !Int
+  } deriving (Show, Eq)
+
+newtype MachineConfig = MachineConfig
+  { mcSlotLimits :: SlotLimits
+  } deriving (Show, Eq)
+
+defaultSlotLimits :: SlotLimits
+defaultSlotLimits =
+  SlotLimits
+    { slAlu = 12
+    , slValu = 6
+    , slLoad = 2
+    , slStore = 2
+    , slFlow = 1
+    , slDebug = 64
+    }
+
+defaultMachineConfig :: MachineConfig
+defaultMachineConfig =
+  MachineConfig
+    { mcSlotLimits = defaultSlotLimits
+    }
 
 -- | Expected argument counts per opcode, excluding the opcode string itself.
 opcodeArity :: Engine -> String -> Maybe Int

@@ -2,14 +2,21 @@ module Parser
   ( ProgramPayload (..),
     BundlePayload (..),
     SlotPayload (..),
+    ProgramTyped (..),
     parseProgramPayload,
     parseProgramPayloadFile,
+    parseProgramPayloadTyped,
+    parseProgramPayloadTypedWith,
+    parseProgramPayloadFileTyped,
+    parseProgramPayloadFileTypedWith,
   )
 where
 
 import Control.Applicative (many)
 import Control.Monad (zipWithM)
 import Data.Char (isDigit, isSpace)
+import Data.Word (Word32)
+import qualified ISA
 import Text.ParserCombinators.ReadP
   ( ReadP,
     char,
@@ -45,6 +52,13 @@ data SlotPayload = SlotPayload
   }
   deriving (Show, Eq)
 
+data ProgramTyped = ProgramTyped
+  { ptRounds :: !Int,
+    ptBatchSize :: !Int,
+    ptProgram :: ![ISA.Bundle ()]
+  }
+  deriving (Show, Eq)
+
 data Value
   = VInt !Int
   | VString !String
@@ -56,10 +70,24 @@ data Value
 parseProgramPayloadFile :: FilePath -> IO (Either String ProgramPayload)
 parseProgramPayloadFile path = parseProgramPayload <$> readFile path
 
+parseProgramPayloadFileTyped :: FilePath -> IO (Either String ProgramTyped)
+parseProgramPayloadFileTyped path = parseProgramPayloadTyped <$> readFile path
+
+parseProgramPayloadFileTypedWith :: ISA.MachineConfig -> FilePath -> IO (Either String ProgramTyped)
+parseProgramPayloadFileTypedWith cfg path = parseProgramPayloadTypedWith cfg <$> readFile path
+
 parseProgramPayload :: String -> Either String ProgramPayload
 parseProgramPayload src = do
   v <- parseValueFromText src
   decodeProgramPayload v
+
+parseProgramPayloadTyped :: String -> Either String ProgramTyped
+parseProgramPayloadTyped = parseProgramPayloadTypedWith ISA.defaultMachineConfig
+
+parseProgramPayloadTypedWith :: ISA.MachineConfig -> String -> Either String ProgramTyped
+parseProgramPayloadTypedWith cfg src = do
+  payload <- parseProgramPayload src
+  decodeProgramTyped cfg payload
 
 parseValueFromText :: String -> Either String Value
 parseValueFromText src =
@@ -170,6 +198,249 @@ decodeProgramPayload v = do
         ppProgram = decoded
       }
 
+decodeProgramTyped :: ISA.MachineConfig -> ProgramPayload -> Either String ProgramTyped
+decodeProgramTyped cfg payload = do
+  ensureNonNegative "rounds" (ppRounds payload)
+  ensureNonNegative "batch_size" (ppBatchSize payload)
+  bundles <- zipWithM (decodeTypedBundle cfg) [0 :: Int ..] (ppProgram payload)
+  pure
+    ProgramTyped
+      { ptRounds = ppRounds payload
+      , ptBatchSize = ppBatchSize payload
+      , ptProgram = bundles
+      }
+
+decodeTypedBundle :: ISA.MachineConfig -> Int -> BundlePayload -> Either String (ISA.Bundle ())
+decodeTypedBundle cfg bundleIx bundle = do
+  checkSlotLimit (engineCtx "alu") (ISA.slAlu limits) (bpAlu bundle)
+  checkSlotLimit (engineCtx "valu") (ISA.slValu limits) (bpValu bundle)
+  checkSlotLimit (engineCtx "load") (ISA.slLoad limits) (bpLoad bundle)
+  checkSlotLimit (engineCtx "store") (ISA.slStore limits) (bpStore bundle)
+  checkSlotLimit (engineCtx "flow") (ISA.slFlow limits) (bpFlow bundle)
+
+  alu <- zipWithM (decodeTypedAlu bundleIx) [0 :: Int ..] (bpAlu bundle)
+  valu <- zipWithM (decodeTypedValu bundleIx) [0 :: Int ..] (bpValu bundle)
+  load <- zipWithM (decodeTypedLoad bundleIx) [0 :: Int ..] (bpLoad bundle)
+  store <- zipWithM (decodeTypedStore bundleIx) [0 :: Int ..] (bpStore bundle)
+  flow <- zipWithM (decodeTypedFlow bundleIx) [0 :: Int ..] (bpFlow bundle)
+
+  pure $
+    ISA.Bundle
+      { ISA.aluSlots = alu
+      , ISA.valuSlots = valu
+      , ISA.loadSlots = load
+      , ISA.storeSlots = store
+      , ISA.flowSlots = flow
+      , ISA.debugSlots = []
+      }
+  where
+    limits = ISA.mcSlotLimits cfg
+    engineCtx engine =
+      "program bundle #" ++ show bundleIx ++ " engine \"" ++ engine ++ "\""
+
+decodeTypedAlu :: Int -> Int -> SlotPayload -> Either String ISA.AluSlot
+decodeTypedAlu bundleIx slotIx slot = do
+  checkOpcodeArity ctx ISA.EngineAlu (spOp slot) (spArgs slot)
+  op <- expectAluOp ctx (spOp slot)
+  case spArgs slot of
+    [dest, a1, a2] ->
+      ISA.Alu
+        op
+        <$> expectScratch (argCtx 0) dest
+        <*> expectScratch (argCtx 1) a1
+        <*> expectScratch (argCtx 2) a2
+    _ ->
+      Left (ctx ++ ": internal arity mismatch after opcode check")
+  where
+    ctx = slotCtx bundleIx "alu" slotIx
+    argCtx :: Int -> String
+    argCtx argIx = ctx ++ " arg #" ++ show argIx
+
+decodeTypedValu :: Int -> Int -> SlotPayload -> Either String ISA.ValuSlot
+decodeTypedValu bundleIx slotIx slot = do
+  checkOpcodeArity ctx ISA.EngineValu (spOp slot) (spArgs slot)
+  case (spOp slot, spArgs slot) of
+    ("vbroadcast", [dest, src]) ->
+      ISA.VBroadcast
+        <$> expectScratch (argCtx 0) dest
+        <*> expectScratch (argCtx 1) src
+    ("multiply_add", [dest, a, b, c]) ->
+      ISA.MultiplyAdd
+        <$> expectScratch (argCtx 0) dest
+        <*> expectScratch (argCtx 1) a
+        <*> expectScratch (argCtx 2) b
+        <*> expectScratch (argCtx 3) c
+    (opTxt, [dest, a1, a2]) -> do
+      op <- expectAluOp ctx opTxt
+      ISA.VAlu
+        op
+        <$> expectScratch (argCtx 0) dest
+        <*> expectScratch (argCtx 1) a1
+        <*> expectScratch (argCtx 2) a2
+    _ ->
+      Left (ctx ++ ": internal arity mismatch after opcode check")
+  where
+    ctx = slotCtx bundleIx "valu" slotIx
+    argCtx :: Int -> String
+    argCtx argIx = ctx ++ " arg #" ++ show argIx
+
+decodeTypedLoad :: Int -> Int -> SlotPayload -> Either String ISA.LoadSlot
+decodeTypedLoad bundleIx slotIx slot = do
+  checkOpcodeArity ctx ISA.EngineLoad (spOp slot) (spArgs slot)
+  case (spOp slot, spArgs slot) of
+    ("load", [dest, addr]) ->
+      ISA.Load
+        <$> expectScratch (argCtx 0) dest
+        <*> expectScratch (argCtx 1) addr
+    ("load_offset", [dest, addr, off]) ->
+      ISA.LoadOffset
+        <$> expectScratch (argCtx 0) dest
+        <*> expectScratch (argCtx 1) addr
+        <*> pure (ISA.Offset off)
+    ("vload", [dest, addr]) ->
+      ISA.VLoad
+        <$> expectScratch (argCtx 0) dest
+        <*> expectScratch (argCtx 1) addr
+    ("const", [dest, val]) ->
+      ISA.Const
+        <$> expectScratch (argCtx 0) dest
+        <*> pure (toWord32 val)
+    _ ->
+      Left (ctx ++ ": internal arity mismatch after opcode check")
+  where
+    ctx = slotCtx bundleIx "load" slotIx
+    argCtx :: Int -> String
+    argCtx argIx = ctx ++ " arg #" ++ show argIx
+
+decodeTypedStore :: Int -> Int -> SlotPayload -> Either String ISA.StoreSlot
+decodeTypedStore bundleIx slotIx slot = do
+  checkOpcodeArity ctx ISA.EngineStore (spOp slot) (spArgs slot)
+  case (spOp slot, spArgs slot) of
+    ("store", [addr, src]) ->
+      ISA.Store
+        <$> expectScratch (argCtx 0) addr
+        <*> expectScratch (argCtx 1) src
+    ("vstore", [addr, src]) ->
+      ISA.VStore
+        <$> expectScratch (argCtx 0) addr
+        <*> expectScratch (argCtx 1) src
+    _ ->
+      Left (ctx ++ ": internal arity mismatch after opcode check")
+  where
+    ctx = slotCtx bundleIx "store" slotIx
+    argCtx :: Int -> String
+    argCtx argIx = ctx ++ " arg #" ++ show argIx
+
+decodeTypedFlow :: Int -> Int -> SlotPayload -> Either String ISA.FlowSlot
+decodeTypedFlow bundleIx slotIx slot = do
+  checkOpcodeArity ctx ISA.EngineFlow (spOp slot) (spArgs slot)
+  case (spOp slot, spArgs slot) of
+    ("select", [dest, cond, a, b]) ->
+      ISA.Select
+        <$> expectScratch (argCtx 0) dest
+        <*> expectScratch (argCtx 1) cond
+        <*> expectScratch (argCtx 2) a
+        <*> expectScratch (argCtx 3) b
+    ("add_imm", [dest, a, imm]) ->
+      ISA.AddImm
+        <$> expectScratch (argCtx 0) dest
+        <*> expectScratch (argCtx 1) a
+        <*> pure (ISA.Imm imm)
+    ("vselect", [dest, cond, a, b]) ->
+      ISA.VSelect
+        <$> expectScratch (argCtx 0) dest
+        <*> expectScratch (argCtx 1) cond
+        <*> expectScratch (argCtx 2) a
+        <*> expectScratch (argCtx 3) b
+    ("halt", []) ->
+      Right ISA.Halt
+    ("pause", []) ->
+      Right ISA.Pause
+    ("trace_write", [val]) ->
+      ISA.TraceWrite <$> expectScratch (argCtx 0) val
+    ("cond_jump", [cond, addr]) ->
+      ISA.CondJump
+        <$> expectScratch (argCtx 0) cond
+        <*> expectProgAddr (argCtx 1) addr
+    ("cond_jump_rel", [cond, off]) ->
+      ISA.CondJumpRel
+        <$> expectScratch (argCtx 0) cond
+        <*> pure (ISA.Offset off)
+    ("jump", [addr]) ->
+      ISA.Jump <$> expectProgAddr (argCtx 0) addr
+    ("jump_indirect", [addr]) ->
+      ISA.JumpIndirect <$> expectScratch (argCtx 0) addr
+    ("coreid", [dest]) ->
+      ISA.CoreId <$> expectScratch (argCtx 0) dest
+    _ ->
+      Left (ctx ++ ": internal arity mismatch after opcode check")
+  where
+    ctx = slotCtx bundleIx "flow" slotIx
+    argCtx :: Int -> String
+    argCtx argIx = ctx ++ " arg #" ++ show argIx
+
+checkOpcodeArity :: String -> ISA.Engine -> String -> [Int] -> Either String ()
+checkOpcodeArity ctx engine op args =
+  case ISA.opcodeArity engine op of
+    Nothing ->
+      Left (ctx ++ ": unknown opcode \"" ++ op ++ "\"")
+    Just expected ->
+      if length args == expected
+        then Right ()
+        else
+          Left
+            ( ctx
+                ++ ": opcode \""
+                ++ op
+                ++ "\" expects "
+                ++ show expected
+                ++ " argument(s), got "
+                ++ show (length args)
+            )
+
+checkSlotLimit :: String -> Int -> [a] -> Either String ()
+checkSlotLimit ctx limit slots =
+  if length slots <= limit
+    then Right ()
+    else
+      Left
+        ( ctx
+            ++ " exceeds slot limit "
+            ++ show limit
+            ++ " (got "
+            ++ show (length slots)
+            ++ ")"
+        )
+
+ensureNonNegative :: String -> Int -> Either String ()
+ensureNonNegative name n =
+  if n < 0
+    then Left (name ++ " must be non-negative, got " ++ show n)
+    else Right ()
+
+expectScratch :: String -> Int -> Either String ISA.ScratchAddr
+expectScratch ctx n = do
+  ensureNonNegative ctx n
+  pure (ISA.ScratchAddr n)
+
+expectProgAddr :: String -> Int -> Either String ISA.ProgAddr
+expectProgAddr ctx n = do
+  ensureNonNegative ctx n
+  pure (ISA.ProgAddr n)
+
+expectAluOp :: String -> String -> Either String ISA.AluOp
+expectAluOp ctx op =
+  case ISA.parseAluOp op of
+    Just parsed -> Right parsed
+    Nothing -> Left (ctx ++ ": expected ALU opcode, got \"" ++ op ++ "\"")
+
+toWord32 :: Int -> Word32
+toWord32 n = fromInteger (toInteger n `mod` (2 ^ (32 :: Integer)))
+
+slotCtx :: Int -> String -> Int -> String
+slotCtx bundleIx engine slotIx =
+  "program bundle #" ++ show bundleIx ++ " " ++ engine ++ " slot #" ++ show slotIx
+
 decodeBundle :: Int -> Value -> Either String BundlePayload
 decodeBundle bundleIx v = do
   fields <- expectDict ctx v
@@ -201,22 +472,22 @@ decodeBundle bundleIx v = do
     decodeSlot engine slotIx slotVal =
       case slotVal of
         VTuple [] ->
-          Left (slotCtx engine slotIx ++ " must not be empty")
+          Left (slotCtxRaw engine slotIx ++ " must not be empty")
         VTuple (opVal : argsVal) -> do
-          op <- expectString (slotCtx engine slotIx ++ " opcode") opVal
+          op <- expectString (slotCtxRaw engine slotIx ++ " opcode") opVal
           args <- zipWithM (decodeArg engine slotIx) [0 :: Int ..] argsVal
           pure (SlotPayload op args)
         _ ->
-          Left (slotCtx engine slotIx ++ " must be a tuple")
+          Left (slotCtxRaw engine slotIx ++ " must be a tuple")
 
     decodeArg engine slotIx argIx =
-      expectIntValue (argCtx engine slotIx argIx)
+      expectIntValue (argCtxRaw engine slotIx argIx)
 
-    slotCtx engine slotIx =
+    slotCtxRaw engine slotIx =
       ctx ++ " " ++ engine ++ " slot #" ++ show slotIx
 
-    argCtx engine slotIx argIx =
-      slotCtx engine slotIx ++ " arg #" ++ show argIx
+    argCtxRaw engine slotIx argIx =
+      slotCtxRaw engine slotIx ++ " arg #" ++ show argIx
 
 expectDict :: String -> Value -> Either String [(String, Value)]
 expectDict ctx v =
