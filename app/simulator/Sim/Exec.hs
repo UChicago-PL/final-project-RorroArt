@@ -52,14 +52,16 @@ emptyPendingWrites =
       pwRunState = Nothing
     }
 
-executeBundle :: ISA.Bundle () -> SimM ()
+executeBundle :: ISA.Bundle () -> SimM PendingWrites
 executeBundle bundle = do
   cfg <- ask
   ms <- get
   let snap = buildSnapshot cfg ms
   case runStateT (runReaderT (executeBundleSlots bundle) snap) emptyPendingWrites of
-    Left err -> lift (lift (throwError err))
-    Right (_, pw) -> commitPendingWrites pw
+    Left err -> throwError err
+    Right (_, pw) -> do
+      commitPendingWrites pw
+      pure pw
 
 executeBundleSlots :: ISA.Bundle () -> StepM ()
 executeBundleSlots bundle = do

@@ -5,6 +5,7 @@ module Sim
   , MachineState (..)
   , StepSnapshot (..)
   , PendingWrites (..)
+  , CycleTrace (..)
   , SimError (..)
   , SimM
   , StepM

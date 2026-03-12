@@ -17,6 +17,7 @@ import System.IO (hPutStrLn, stderr)
 data CliArgs = CliArgs
   { caProgramPath :: !FilePath
   , caMemPath :: !FilePath
+  , caTrace :: !Bool
   }
 
 main :: IO ()
@@ -31,7 +32,7 @@ main = do
 
 runCli :: CliArgs -> IO ()
 runCli cli = do
-  let cfg = defaultSimConfig
+  let cfg = defaultSimConfig { scEnableTrace = caTrace cli }
   parsed <- parseProgramPayloadFileTypedWith (scMachineConfig cfg) (caProgramPath cli)
   case parsed of
     Left err -> failWith ("Parse failed: " ++ err)
@@ -41,26 +42,28 @@ runCli cli = do
       case res of
         Left simErr ->
           failWith ("Simulation failed: " ++ renderSimError simErr)
-        Right (memOut, cycleMay) -> do
+        Right (memOut, cycleCount, _trace) -> do
           writeMemFile (caMemPath cli) memOut
-          case cycleMay of
-            Just n -> putStrLn ("{\"cycle\":" ++ show n ++ "}")
-            Nothing -> pure ()
+          putStrLn ("{\"cycle\":" ++ show cycleCount ++ "}")
 
 parseCliArgs :: [String] -> Either String CliArgs
 parseCliArgs args = case args of
   [programPath, "-m", memPath] ->
-    Right (CliArgs programPath memPath)
+    Right (CliArgs programPath memPath False)
   [programPath, "--mem", memPath] ->
-    Right (CliArgs programPath memPath)
+    Right (CliArgs programPath memPath False)
+  ["--trace", programPath, "-m", memPath] ->
+    Right (CliArgs programPath memPath True)
+  ["--trace", programPath, "--mem", memPath] ->
+    Right (CliArgs programPath memPath True)
   _ ->
     Left "Invalid arguments."
 
 printUsage :: IO ()
 printUsage = do
   hPutStrLn stderr "Usage:"
-  hPutStrLn stderr "  simulator <program.bundle> -m <mem.bin>"
-  hPutStrLn stderr "  simulator <program.bundle> --mem <mem.bin>"
+  hPutStrLn stderr "  simulator [--trace] <program.bundle> -m <mem.bin>"
+  hPutStrLn stderr "  simulator [--trace] <program.bundle> --mem <mem.bin>"
 
 failWith :: String -> IO a
 failWith msg = do

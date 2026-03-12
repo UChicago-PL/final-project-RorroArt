@@ -13,26 +13,32 @@ where
 
 import Control.Monad (when)
 import Control.Monad.Except (ExceptT, throwError)
-import Control.Monad.Reader (MonadTrans (lift), runReaderT)
+import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Reader (ask, runReaderT)
 import Control.Monad.State.Strict (get, modify', put, runStateT)
+import Control.Monad.Writer.Strict (runWriterT, tell)
 import Data.IntMap qualified as IM
+import Data.Sequence (Seq)
+import Data.Sequence qualified as Seq
 import Data.Word (Word32)
 import ISA qualified
 import Sim.Exec (executeBundle)
 import Sim.Types
+import System.IO (hFlush, stdout)
 
-runSimulator :: SimConfig -> [ISA.Bundle ()] -> [Word32] -> ExceptT SimError IO ([Word32], Maybe Int)
+runSimulator :: SimConfig -> [ISA.Bundle ()] -> [Word32] -> ExceptT SimError IO ([Word32], Int, Seq CycleTrace)
 runSimulator cfg bundles mem0 = do
   let st0 = initMachineState cfg mem0
-  (_, st1) <- runStateT (runReaderT (runProgram bundles) cfg) st0
-  pure (finalMemoryImage st1, Just (msCycle st1))
+  ((_, st1), trace) <- runWriterT (runStateT (runReaderT (runProgram bundles) cfg) st0)
+  pure (finalMemoryImage st1, msCycle st1, trace)
 
 defaultSimConfig :: SimConfig
 defaultSimConfig =
   SimConfig
     { scMachineConfig = ISA.defaultMachineConfig,
       scScratchSize = 1536,
-      scEnablePause = False
+      scEnablePause = False,
+      scEnableTrace = False
     }
 
 initMachineState :: SimConfig -> [Word32] -> MachineState
@@ -87,10 +93,24 @@ stepCore bundles = do
           pure False
       | otherwise ->
           case fetchBundle bundles pc of
-            Left err -> lift (lift (throwError err))
+            Left err -> throwError err
             Right bundle -> do
-              executeBundle bundle
-              when (bundleCountsAsCycle bundle) $
+              pw <- executeBundle bundle
+              when (bundleCountsAsCycle bundle) $ do
+                cfg <- ask
+                when (scEnableTrace cfg) $ do
+                  ms' <- get
+                  let ct =
+                        CycleTrace
+                          { ctCycle = msCycle ms,
+                            ctPc = pc,
+                            ctScratchW = pwScratch pw,
+                            ctMemW = pwMem pw,
+                            ctNextPc = csPc (msCore ms'),
+                            ctNextRun = csRunState (msCore ms')
+                          }
+                  tell $ Seq.singleton ct
+                  liftIO $ putStrLn (renderCycleTrace ct) >> hFlush stdout
                 modify' (\s -> s {msCycle = msCycle s + 1})
               pure True
     _ -> pure False
@@ -118,3 +138,12 @@ bundleCountsAsCycle bundle =
 
 progAddrToInt :: ISA.ProgAddr -> Int
 progAddrToInt (ISA.ProgAddr n) = n
+
+renderCycleTrace :: CycleTrace -> String
+renderCycleTrace ct =
+  "cycle=" ++ show (ctCycle ct)
+    ++ " pc=" ++ show (ctPc ct)
+    ++ " next_pc=" ++ show (ctNextPc ct)
+    ++ " run=" ++ show (ctNextRun ct)
+    ++ " scratch_w=" ++ show (IM.toAscList (ctScratchW ct))
+    ++ " mem_w=" ++ show (IM.toAscList (ctMemW ct))

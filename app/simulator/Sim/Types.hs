@@ -5,6 +5,7 @@ module Sim.Types
     MachineState (..),
     StepSnapshot (..),
     PendingWrites (..),
+    CycleTrace (..),
     SimError (..),
     SimM,
     StepM,
@@ -14,7 +15,9 @@ where
 import Control.Monad.Except (ExceptT)
 import Control.Monad.Reader (ReaderT)
 import Control.Monad.State.Strict (StateT)
+import Control.Monad.Writer.Strict (WriterT)
 import Data.IntMap.Strict (IntMap)
+import Data.Sequence (Seq)
 import Data.Word (Word32)
 import ISA qualified
 
@@ -22,7 +25,8 @@ import ISA qualified
 data SimConfig = SimConfig
   { scMachineConfig :: !ISA.MachineConfig,
     scScratchSize :: !Int,
-    scEnablePause :: !Bool
+    scEnablePause :: !Bool,
+    scEnableTrace :: !Bool
   }
   deriving (Show, Eq)
 
@@ -69,6 +73,17 @@ data PendingWrites = PendingWrites
   }
   deriving (Show, Eq)
 
+-- Captures the writes and state transitions for one cycle.
+data CycleTrace = CycleTrace
+  { ctCycle :: !Int,
+    ctPc :: !ISA.ProgAddr,
+    ctScratchW :: !(IntMap Word32),
+    ctMemW :: !(IntMap Word32),
+    ctNextPc :: !ISA.ProgAddr,
+    ctNextRun :: !CoreRunState
+  }
+  deriving (Show, Eq)
+
 data SimError
   = SimParseError !String
   | SimInvalidProgram !String
@@ -80,7 +95,7 @@ data SimError
   deriving (Show, Eq)
 
 type SimM a =
-  ReaderT SimConfig (StateT MachineState (ExceptT SimError IO)) a
+  ReaderT SimConfig (StateT MachineState (WriterT (Seq CycleTrace) (ExceptT SimError IO))) a
 
 type StepM a =
   ReaderT StepSnapshot (StateT PendingWrites (Either SimError)) a
