@@ -36,6 +36,15 @@ executable simulator
         , mtl >= 2.3 && < 2.4
         , bytestring >= 0.11 && < 0.13
 
+executable parse-test
+    import:           shared
+    hs-source-dirs:   app/simulator
+    main-is:          ParseTest.hs
+    other-modules:
+        Parser
+    build-depends:
+        final-project
+
 executable compiler
     import:           shared
     hs-source-dirs:   app/compiler
