@@ -26,7 +26,8 @@ data SimConfig = SimConfig
   { scMachineConfig :: !ISA.MachineConfig,
     scScratchSize :: !Int,
     scEnablePause :: !Bool,
-    scEnableTrace :: !Bool
+    scEnableTrace :: !Bool,
+    scStreamTrace :: !Bool
   }
   deriving (Show, Eq)
 

@@ -27,9 +27,6 @@ parseProgramPayloadFileTyped = parseProgramPayloadFileTypedWith ISA.defaultMachi
 parseProgramPayloadFileTypedWith :: ISA.MachineConfig -> FilePath -> IO (Either String ProgramTyped)
 parseProgramPayloadFileTypedWith cfg path = parseProgram cfg <$> readFile path
 
--- Hand-rolled recursive descent parser.
--- P a = remaining input -> Either error (result, rest)
-
 type P a = String -> Either String (a, String)
 
 -- Whitespace and characters

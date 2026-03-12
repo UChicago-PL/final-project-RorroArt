@@ -20,6 +20,7 @@ module Sim
   , stepCore
   , fetchBundle
   , bundleCountsAsCycle
+  , renderCycleTrace
   , buildSnapshot
   , emptyPendingWrites
   , executeBundle

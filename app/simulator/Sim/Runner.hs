@@ -8,6 +8,7 @@ module Sim.Runner
     stepCore,
     fetchBundle,
     bundleCountsAsCycle,
+    renderCycleTrace,
   )
 where
 
@@ -24,7 +25,7 @@ import Data.Word (Word32)
 import ISA qualified
 import Sim.Exec (executeBundle)
 import Sim.Types
-import System.IO (hFlush, stdout)
+import System.IO (hFlush, hPutStrLn, stderr)
 
 runSimulator :: SimConfig -> [ISA.Bundle ()] -> [Word32] -> ExceptT SimError IO ([Word32], Int, Seq CycleTrace)
 runSimulator cfg bundles mem0 = do
@@ -38,7 +39,8 @@ defaultSimConfig =
     { scMachineConfig = ISA.defaultMachineConfig,
       scScratchSize = 1536,
       scEnablePause = False,
-      scEnableTrace = False
+      scEnableTrace = False,
+      scStreamTrace = False
     }
 
 initMachineState :: SimConfig -> [Word32] -> MachineState
@@ -98,7 +100,7 @@ stepCore bundles = do
               pw <- executeBundle bundle
               when (bundleCountsAsCycle bundle) $ do
                 cfg <- ask
-                when (scEnableTrace cfg) $ do
+                when (scEnableTrace cfg || scStreamTrace cfg) $ do
                   ms' <- get
                   let ct =
                         CycleTrace
@@ -109,8 +111,9 @@ stepCore bundles = do
                             ctNextPc = csPc (msCore ms'),
                             ctNextRun = csRunState (msCore ms')
                           }
-                  tell $ Seq.singleton ct
-                  liftIO $ putStrLn (renderCycleTrace ct) >> hFlush stdout
+                  when (scEnableTrace cfg) $ tell $ Seq.singleton ct
+                  when (scStreamTrace cfg) $
+                    liftIO $ hPutStrLn stderr (renderCycleTrace ct) >> hFlush stderr
                 modify' (\s -> s {msCycle = msCycle s + 1})
               pure True
     _ -> pure False
@@ -141,9 +144,10 @@ progAddrToInt (ISA.ProgAddr n) = n
 
 renderCycleTrace :: CycleTrace -> String
 renderCycleTrace ct =
-  "cycle=" ++ show (ctCycle ct)
-    ++ " pc=" ++ show (ctPc ct)
-    ++ " next_pc=" ++ show (ctNextPc ct)
-    ++ " run=" ++ show (ctNextRun ct)
-    ++ " scratch_w=" ++ show (IM.toAscList (ctScratchW ct))
-    ++ " mem_w=" ++ show (IM.toAscList (ctMemW ct))
+  "---\n"
+    ++ "cycle=" ++ show (ctCycle ct) ++ "\n"
+    ++ "pc=" ++ show (progAddrToInt (ctPc ct)) ++ "\n"
+    ++ "next_pc=" ++ show (progAddrToInt (ctNextPc ct)) ++ "\n"
+    ++ "run=" ++ show (ctNextRun ct) ++ "\n"
+    ++ "scratch_w=" ++ show (IM.toAscList (ctScratchW ct)) ++ "\n"
+    ++ "mem_w=" ++ show (IM.toAscList (ctMemW ct))
