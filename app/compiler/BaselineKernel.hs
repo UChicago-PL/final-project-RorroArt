@@ -1,184 +1,15 @@
 module BaselineKernel
-  ( BaselineDebugKey(..)
-  , baselineRounds
-  , baselineBatchSize
-  , baselineKernel
-  , buildBaselineKernel
+  ( scalarKernel
+  , hashStages
   ) where
 
-import Control.Monad (forM_)
-import Control.Monad.State.Strict
-import ISA
-  ( AluOp(..)
-  , AluSlot(..)
-  , Bundle(..)
-  , DebugSlot(..)
-  , FlowSlot(..)
-  , LoadSlot(..)
-  , ScratchAddr
-  , StoreSlot(..)
-  )
+import Data.Word (Word32)
 
-data BaselineDebugKey
-  = KeyIdx Int Int
-  | KeyVal Int Int
-  | KeyNodeVal Int Int
-  | KeyHashStage Int Int Int
-  | KeyHashedVal Int Int
-  | KeyNextIdx Int Int
-  | KeyWrappedIdx Int Int
-  deriving (Show, Eq, Ord)
+import ISA (AluOp(..))
+import FinalIR
 
-data BuilderState = BuilderState
-  { nextScratch :: !ScratchAddr
-  , constMap :: [(Int, ScratchAddr)]
-  , instrsRev :: [Bundle BaselineDebugKey]
-  }
-
-type BuildM = State BuilderState
-
-baselineRounds :: Int
-baselineRounds = 16
-
-baselineBatchSize :: Int
-baselineBatchSize = 256
-
-baselineKernel :: [Bundle BaselineDebugKey]
-baselineKernel = buildBaselineKernel baselineRounds baselineBatchSize
-
-buildBaselineKernel :: Int -> Int -> [Bundle BaselineDebugKey]
-buildBaselineKernel rounds batchSize =
-  reverse . instrsRev $ execState (buildKernel rounds batchSize) (BuilderState 0 [] [])
-
-buildKernel :: Int -> Int -> BuildM ()
-buildKernel rounds batchSize = do
-  tmp1 <- allocScratch
-  tmp2 <- allocScratch
-  tmp3 <- allocScratch
-  roundsAddr <- allocScratch
-  nNodesAddr <- allocScratch
-  batchSizeAddr <- allocScratch
-  forestHeightAddr <- allocScratch
-  forestValuesPAddr <- allocScratch
-  inpIndicesPAddr <- allocScratch
-  inpValuesPAddr <- allocScratch
-
-  let initVars =
-        [ roundsAddr
-        , nNodesAddr
-        , batchSizeAddr
-        , forestHeightAddr
-        , forestValuesPAddr
-        , inpIndicesPAddr
-        , inpValuesPAddr
-        ]
-  forM_ (zip ([0 ..] :: [Int]) initVars) $ \(i, addr) -> do
-    emitLoad (Const tmp1 (fromIntegral i))
-    emitLoad (Load addr tmp1)
-
-  zeroConst <- scratchConst 0
-  oneConst <- scratchConst 1
-  twoConst <- scratchConst 2
-  emitFlow Pause
-  emitDebug (DebugIgnored "Starting loop")
-
-  tmpIdx <- allocScratch
-  tmpVal <- allocScratch
-  tmpNodeVal <- allocScratch
-  tmpAddr <- allocScratch
-
-  forM_ [0 .. rounds - 1] $ \roundI ->
-    forM_ [0 .. batchSize - 1] $ \i ->
-      buildBatch
-        roundI
-        i
-        tmp1
-        tmp2
-        tmp3
-        tmpIdx
-        tmpVal
-        tmpNodeVal
-        tmpAddr
-        nNodesAddr
-        inpIndicesPAddr
-        inpValuesPAddr
-        forestValuesPAddr
-        zeroConst
-        oneConst
-        twoConst
-
-  emitFlow Pause
-
-buildBatch
-  :: Int
-  -> Int
-  -> ScratchAddr
-  -> ScratchAddr
-  -> ScratchAddr
-  -> ScratchAddr
-  -> ScratchAddr
-  -> ScratchAddr
-  -> ScratchAddr
-  -> ScratchAddr
-  -> ScratchAddr
-  -> ScratchAddr
-  -> ScratchAddr
-  -> ScratchAddr
-  -> ScratchAddr
-  -> ScratchAddr
-  -> BuildM ()
-buildBatch
-  roundI
-  i
-  tmp1
-  tmp2
-  tmp3
-  tmpIdx
-  tmpVal
-  tmpNodeVal
-  tmpAddr
-  nNodesAddr
-  inpIndicesPAddr
-  inpValuesPAddr
-  forestValuesPAddr
-  zeroConst
-  oneConst
-  twoConst = do
-  iConst <- scratchConst i
-  emitAlu Add tmpAddr inpIndicesPAddr iConst
-  emitLoad (Load tmpIdx tmpAddr)
-  emitDebug (Compare tmpIdx (KeyIdx roundI i))
-
-  emitAlu Add tmpAddr inpValuesPAddr iConst
-  emitLoad (Load tmpVal tmpAddr)
-  emitDebug (Compare tmpVal (KeyVal roundI i))
-
-  emitAlu Add tmpAddr forestValuesPAddr tmpIdx
-  emitLoad (Load tmpNodeVal tmpAddr)
-  emitDebug (Compare tmpNodeVal (KeyNodeVal roundI i))
-
-  emitAlu Xor tmpVal tmpVal tmpNodeVal
-  buildHash roundI i tmpVal tmp1 tmp2
-  emitDebug (Compare tmpVal (KeyHashedVal roundI i))
-
-  emitAlu Mod tmp1 tmpVal twoConst
-  emitAlu Eq_ tmp1 tmp1 zeroConst
-  emitFlow (Select tmp3 tmp1 oneConst twoConst)
-  emitAlu Mul tmpIdx tmpIdx twoConst
-  emitAlu Add tmpIdx tmpIdx tmp3
-  emitDebug (Compare tmpIdx (KeyNextIdx roundI i))
-
-  emitAlu Lt tmp1 tmpIdx nNodesAddr
-  emitFlow (Select tmpIdx tmp1 tmpIdx zeroConst)
-  emitDebug (Compare tmpIdx (KeyWrappedIdx roundI i))
-
-  emitAlu Add tmpAddr inpIndicesPAddr iConst
-  emitStore (Store tmpAddr tmpIdx)
-
-  emitAlu Add tmpAddr inpValuesPAddr iConst
-  emitStore (Store tmpAddr tmpVal)
-
-hashStages :: [(AluOp, Int, AluOp, AluOp, Int)]
+-- | The 6-stage mix pipeline from the harness (matches HASH_STAGES).
+hashStages :: [(AluOp, Word32, AluOp, AluOp, Word32)]
 hashStages =
   [ (Add, 0x7ED55D16, Add, Shl, 12)
   , (Xor, 0xC761C23C, Xor, Shr, 19)
@@ -188,57 +19,44 @@ hashStages =
   , (Xor, 0xB55A4F09, Xor, Shr, 16)
   ]
 
-buildHash :: Int -> Int -> ScratchAddr -> ScratchAddr -> ScratchAddr -> BuildM ()
-buildHash roundI batchI valHashAddr tmp1 tmp2 =
-  forM_ (zip [0 ..] hashStages) $ \(stageI, (op1, val1, op2, op3, val3)) -> do
-    val1Const <- scratchConst val1
-    emitAlu op1 tmp1 valHashAddr val1Const
-    val3Const <- scratchConst val3
-    emitAlu op3 tmp2 valHashAddr val3Const
-    emitAlu op2 valHashAddr tmp1 tmp2
-    emitDebug (Compare valHashAddr (KeyHashStage roundI batchI stageI))
+-- | Build the scalar baseline kernel.
+scalarKernel :: Int -> Int -> Function
+scalarKernel rounds batchSize =
+  let (_unit, stmts) = runBuild $ do
+        -- Header loads (slots 0..6).
+        _roundsV <- emitLet I32 (RLoad LoadScalar Header (Const 0))
+        nNodes   <- emitLet I32 (RLoad LoadScalar Header (Const 1))
+        _batch   <- emitLet I32 (RLoad LoadScalar Header (Const 2))
+        _hgt     <- emitLet I32 (RLoad LoadScalar Header (Const 3))
+        _fptr    <- emitLet I32 (RLoad LoadScalar Header (Const 4))
+        _iptr    <- emitLet I32 (RLoad LoadScalar Header (Const 5))
+        _vptr    <- emitLet I32 (RLoad LoadScalar Header (Const 6))
 
-allocScratch :: BuildM ScratchAddr
-allocScratch = do
-  st <- get
-  let addr = nextScratch st
-  put st { nextScratch = addr + 1 }
-  pure addr
+        emitFor 0 rounds 1 $ \_r -> do
+          emitFor 0 batchSize 1 $ \i -> do
+            idx  <- emitLet I32 (RLoad LoadScalar InpIdx i)
+            val0 <- emitLet I32 (RLoad LoadScalar InpVal i)
+            node <- emitLet I32 (RLoad LoadScalar Forest idx)
+            valX <- emitLet I32 (RBin Xor val0 node)
+            valH <- emitHash valX
+            mod2 <- emitLet I32 (RBin Mod valH (Const 2))
+            isEv <- emitLet I32 (RBin Eq_ mod2 (Const 0))
+            add  <- emitLet I32 (RSelect isEv (Const 1) (Const 2))
+            idx2 <- emitLet I32 (RBin Mul idx (Const 2))
+            idxN <- emitLet I32 (RBin Add idx2 add)
+            ok   <- emitLet I32 (RBin Lt idxN nNodes)
+            idxW <- emitLet I32 (RSelect ok idxN (Const 0))
+            emitStore StoreScalar InpIdx i idxW
+            emitStore StoreScalar InpVal i valH
 
-scratchConst :: Int -> BuildM ScratchAddr
-scratchConst val = do
-  st <- get
-  case lookupConstAddr val (constMap st) of
-    Just addr -> pure addr
-    Nothing -> do
-      addr <- allocScratch
-      modify' (\s -> s { constMap = (val, addr) : constMap s })
-      emitLoad (Const addr (fromIntegral val))
-      pure addr
-
-lookupConstAddr :: Int -> [(Int, ScratchAddr)] -> Maybe ScratchAddr
-lookupConstAddr _ [] = Nothing
-lookupConstAddr key ((k, addr) : rest)
-  | key == k = Just addr
-  | otherwise = lookupConstAddr key rest
-
-emptyBundle :: Bundle BaselineDebugKey
-emptyBundle = Bundle [] [] [] [] [] []
-
-emit :: Bundle BaselineDebugKey -> BuildM ()
-emit b = modify' (\s -> s { instrsRev = b : instrsRev s })
-
-emitAlu :: AluOp -> ScratchAddr -> ScratchAddr -> ScratchAddr -> BuildM ()
-emitAlu op dest a1 a2 = emit $ emptyBundle { aluSlots = [Alu op dest a1 a2] }
-
-emitLoad :: LoadSlot -> BuildM ()
-emitLoad slot = emit $ emptyBundle { loadSlots = [slot] }
-
-emitStore :: StoreSlot -> BuildM ()
-emitStore slot = emit $ emptyBundle { storeSlots = [slot] }
-
-emitFlow :: FlowSlot -> BuildM ()
-emitFlow slot = emit $ emptyBundle { flowSlots = [slot] }
-
-emitDebug :: DebugSlot BaselineDebugKey -> BuildM ()
-emitDebug slot = emit $ emptyBundle { debugSlots = [slot] }
+        pure ()
+  in Function stmts
+  where
+    emitHash :: Expr -> Build Expr
+    emitHash a0 = foldl go (pure a0) hashStages
+      where
+        go ma (op1, c1, op2, op3, c3) = do
+          a  <- ma
+          t1 <- emitLet I32 (RBin op1 a (Const c1))
+          t2 <- emitLet I32 (RBin op3 a (Const c3))
+          emitLet I32 (RBin op2 t1 t2)
