@@ -1,475 +1,11 @@
 <!DOCTYPE html>
-<!-- saved from url=(0096)https://people.cs.uchicago.edu/~stuart/Functional-Programming-in-Haskell/Chapters/26/lenses.html -->
-<html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-    
-    <title>Functional Programming in Haskell — Lenses</title>
-    <link rel="icon" href="https://people.cs.uchicago.edu/~stuart/Functional-Programming-in-Haskell/Chapters/26/favicon.ico" type="image/x-icon">
+<html lang="en">
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <title>Functional Programming in Haskell &mdash; A Compiler for a VLIW+SIMD Accelerator</title>
+    <link rel="icon" href="favicon.ico" type="image/x-icon">
     <link rel="stylesheet" href="./writeup/fph.css" type="text/css" media="all">
-    
-    <script>
-        MathJax = {
-        tex: {
-            inlineMath: [['\\(','\\)']],
-            macros: {
-            limplies: "{\\rightarrow}",
-            ltrue:    "{\\top}",
-            lfalse:   "{\\bot}",
-            proves:   "{\\;\\vdash\\;}"
-            }
-        }
-        };
-    </script>
-    <script id="MathJax-script" async="" src="./writeup/tex-mml-chtml.js"></script>
-    
-<style type="text/css">.CtxtMenu_InfoClose {  top:.2em; right:.2em;}
-.CtxtMenu_InfoContent {  overflow:auto; text-align:left; font-size:80%;  padding:.4em .6em; border:1px inset; margin:1em 0px;  max-height:20em; max-width:30em; background-color:#EEEEEE;  white-space:normal;}
-.CtxtMenu_Info.CtxtMenu_MousePost {outline:none;}
-.CtxtMenu_Info {  position:fixed; left:50%; width:auto; text-align:center;  border:3px outset; padding:1em 2em; background-color:#DDDDDD;  color:black;  cursor:default; font-family:message-box; font-size:120%;  font-style:normal; text-indent:0; text-transform:none;  line-height:normal; letter-spacing:normal; word-spacing:normal;  word-wrap:normal; white-space:nowrap; float:none; z-index:201;  border-radius: 15px;                     /* Opera 10.5 and IE9 */  -webkit-border-radius:15px;               /* Safari and Chrome */  -moz-border-radius:15px;                  /* Firefox */  -khtml-border-radius:15px;                /* Konqueror */  box-shadow:0px 10px 20px #808080;         /* Opera 10.5 and IE9 */  -webkit-box-shadow:0px 10px 20px #808080; /* Safari 3 & Chrome */  -moz-box-shadow:0px 10px 20px #808080;    /* Forefox 3.5 */  -khtml-box-shadow:0px 10px 20px #808080;  /* Konqueror */  filter:progid:DXImageTransform.Microsoft.dropshadow(OffX=2, OffY=2, Color="gray", Positive="true"); /* IE */}
-</style><style type="text/css">.CtxtMenu_MenuClose {  position:absolute;  cursor:pointer;  display:inline-block;  border:2px solid #AAA;  border-radius:18px;  -webkit-border-radius: 18px;             /* Safari and Chrome */  -moz-border-radius: 18px;                /* Firefox */  -khtml-border-radius: 18px;              /* Konqueror */  font-family: "Courier New", Courier;  font-size:24px;  color:#F0F0F0}
-.CtxtMenu_MenuClose span {  display:block; background-color:#AAA; border:1.5px solid;  border-radius:18px;  -webkit-border-radius: 18px;             /* Safari and Chrome */  -moz-border-radius: 18px;                /* Firefox */  -khtml-border-radius: 18px;              /* Konqueror */  line-height:0;  padding:8px 0 6px     /* may need to be browser-specific */}
-.CtxtMenu_MenuClose:hover {  color:white!important;  border:2px solid #CCC!important}
-.CtxtMenu_MenuClose:hover span {  background-color:#CCC!important}
-.CtxtMenu_MenuClose:hover:focus {  outline:none}
-</style><style type="text/css">.CtxtMenu_Menu {  position:absolute;  background-color:white;  color:black;  width:auto; padding:5px 0px;  border:1px solid #CCCCCC; margin:0; cursor:default;  font: menu; text-align:left; text-indent:0; text-transform:none;  line-height:normal; letter-spacing:normal; word-spacing:normal;  word-wrap:normal; white-space:nowrap; float:none; z-index:201;  border-radius: 5px;                     /* Opera 10.5 and IE9 */  -webkit-border-radius: 5px;             /* Safari and Chrome */  -moz-border-radius: 5px;                /* Firefox */  -khtml-border-radius: 5px;              /* Konqueror */  box-shadow:0px 10px 20px #808080;         /* Opera 10.5 and IE9 */  -webkit-box-shadow:0px 10px 20px #808080; /* Safari 3 & Chrome */  -moz-box-shadow:0px 10px 20px #808080;    /* Forefox 3.5 */  -khtml-box-shadow:0px 10px 20px #808080;  /* Konqueror */}
-.CtxtMenu_MenuItem {  padding: 1px 2em;  background:transparent;}
-.CtxtMenu_MenuArrow {  position:absolute; right:.5em; padding-top:.25em; color:#666666;  font-family: null; font-size: .75em}
-.CtxtMenu_MenuActive .CtxtMenu_MenuArrow {color:white}
-.CtxtMenu_MenuArrow.CtxtMenu_RTL {left:.5em; right:auto}
-.CtxtMenu_MenuCheck {  position:absolute; left:.7em;  font-family: null}
-.CtxtMenu_MenuCheck.CtxtMenu_RTL { right:.7em; left:auto }
-.CtxtMenu_MenuRadioCheck {  position:absolute; left: .7em;}
-.CtxtMenu_MenuRadioCheck.CtxtMenu_RTL {  right: .7em; left:auto}
-.CtxtMenu_MenuInputBox {  padding-left: 1em; right:.5em; color:#666666;  font-family: null;}
-.CtxtMenu_MenuInputBox.CtxtMenu_RTL {  left: .1em;}
-.CtxtMenu_MenuComboBox {  left:.1em; padding-bottom:.5em;}
-.CtxtMenu_MenuSlider {  left: .1em;}
-.CtxtMenu_SliderValue {  position:absolute; right:.1em; padding-top:.25em; color:#333333;  font-size: .75em}
-.CtxtMenu_SliderBar {  outline: none; background: #d3d3d3}
-.CtxtMenu_MenuLabel {  padding: 1px 2em 3px 1.33em;  font-style:italic}
-.CtxtMenu_MenuRule {  border-top: 1px solid #DDDDDD;  margin: 4px 3px;}
-.CtxtMenu_MenuDisabled {  color:GrayText}
-.CtxtMenu_MenuActive {  background-color: #606872;  color: white;}
-.CtxtMenu_MenuDisabled:focus {  background-color: #E8E8E8}
-.CtxtMenu_MenuLabel:focus {  background-color: #E8E8E8}
-.CtxtMenu_ContextMenu:focus {  outline:none}
-.CtxtMenu_ContextMenu .CtxtMenu_MenuItem:focus {  outline:none}
-.CtxtMenu_SelectionMenu {  position:relative; float:left;  border-bottom: none; -webkit-box-shadow:none; -webkit-border-radius:0px; }
-.CtxtMenu_SelectionItem {  padding-right: 1em;}
-.CtxtMenu_Selection {  right: 40%; width:50%; }
-.CtxtMenu_SelectionBox {  padding: 0em; max-height:20em; max-width: none;  background-color:#FFFFFF;}
-.CtxtMenu_SelectionDivider {  clear: both; border-top: 2px solid #000000;}
-.CtxtMenu_Menu .CtxtMenu_MenuClose {  top:-10px; left:-10px}
-</style><style id="MJX-CHTML-styles">
-mjx-container[jax="CHTML"] {
-  line-height: 0;
-}
-
-mjx-container [space="1"] {
-  margin-left: .111em;
-}
-
-mjx-container [space="2"] {
-  margin-left: .167em;
-}
-
-mjx-container [space="3"] {
-  margin-left: .222em;
-}
-
-mjx-container [space="4"] {
-  margin-left: .278em;
-}
-
-mjx-container [space="5"] {
-  margin-left: .333em;
-}
-
-mjx-container [rspace="1"] {
-  margin-right: .111em;
-}
-
-mjx-container [rspace="2"] {
-  margin-right: .167em;
-}
-
-mjx-container [rspace="3"] {
-  margin-right: .222em;
-}
-
-mjx-container [rspace="4"] {
-  margin-right: .278em;
-}
-
-mjx-container [rspace="5"] {
-  margin-right: .333em;
-}
-
-mjx-container [size="s"] {
-  font-size: 70.7%;
-}
-
-mjx-container [size="ss"] {
-  font-size: 50%;
-}
-
-mjx-container [size="Tn"] {
-  font-size: 60%;
-}
-
-mjx-container [size="sm"] {
-  font-size: 85%;
-}
-
-mjx-container [size="lg"] {
-  font-size: 120%;
-}
-
-mjx-container [size="Lg"] {
-  font-size: 144%;
-}
-
-mjx-container [size="LG"] {
-  font-size: 173%;
-}
-
-mjx-container [size="hg"] {
-  font-size: 207%;
-}
-
-mjx-container [size="HG"] {
-  font-size: 249%;
-}
-
-mjx-container [width="full"] {
-  width: 100%;
-}
-
-mjx-box {
-  display: inline-block;
-}
-
-mjx-block {
-  display: block;
-}
-
-mjx-itable {
-  display: inline-table;
-}
-
-mjx-row {
-  display: table-row;
-}
-
-mjx-row > * {
-  display: table-cell;
-}
-
-mjx-mtext {
-  display: inline-block;
-}
-
-mjx-mstyle {
-  display: inline-block;
-}
-
-mjx-merror {
-  display: inline-block;
-  color: red;
-  background-color: yellow;
-}
-
-mjx-mphantom {
-  visibility: hidden;
-}
-
-_::-webkit-full-page-media, _:future, :root mjx-container {
-  will-change: opacity;
-}
-
-mjx-assistive-mml {
-  position: absolute !important;
-  top: 0px;
-  left: 0px;
-  clip: rect(1px, 1px, 1px, 1px);
-  padding: 1px 0px 0px 0px !important;
-  border: 0px !important;
-  display: block !important;
-  width: auto !important;
-  overflow: hidden !important;
-  -webkit-touch-callout: none;
-  -webkit-user-select: none;
-  -khtml-user-select: none;
-  -moz-user-select: none;
-  -ms-user-select: none;
-  user-select: none;
-}
-
-mjx-assistive-mml[display="block"] {
-  width: 100% !important;
-}
-
-mjx-math {
-  display: inline-block;
-  text-align: left;
-  line-height: 0;
-  text-indent: 0;
-  font-style: normal;
-  font-weight: normal;
-  font-size: 100%;
-  font-size-adjust: none;
-  letter-spacing: normal;
-  border-collapse: collapse;
-  word-wrap: normal;
-  word-spacing: normal;
-  white-space: nowrap;
-  direction: ltr;
-  padding: 1px 0;
-}
-
-mjx-container[jax="CHTML"][display="true"] {
-  display: block;
-  text-align: center;
-  margin: 1em 0;
-}
-
-mjx-container[jax="CHTML"][display="true"][width="full"] {
-  display: flex;
-}
-
-mjx-container[jax="CHTML"][display="true"] mjx-math {
-  padding: 0;
-}
-
-mjx-container[jax="CHTML"][justify="left"] {
-  text-align: left;
-}
-
-mjx-container[jax="CHTML"][justify="right"] {
-  text-align: right;
-}
-
-mjx-mi {
-  display: inline-block;
-  text-align: left;
-}
-
-mjx-c {
-  display: inline-block;
-}
-
-mjx-utext {
-  display: inline-block;
-  padding: .75em 0 .2em 0;
-}
-
-mjx-c::before {
-  display: block;
-  width: 0;
-}
-
-.MJX-TEX {
-  font-family: MJXZERO, MJXTEX;
-}
-
-.TEX-B {
-  font-family: MJXZERO, MJXTEX-B;
-}
-
-.TEX-I {
-  font-family: MJXZERO, MJXTEX-I;
-}
-
-.TEX-MI {
-  font-family: MJXZERO, MJXTEX-MI;
-}
-
-.TEX-BI {
-  font-family: MJXZERO, MJXTEX-BI;
-}
-
-.TEX-S1 {
-  font-family: MJXZERO, MJXTEX-S1;
-}
-
-.TEX-S2 {
-  font-family: MJXZERO, MJXTEX-S2;
-}
-
-.TEX-S3 {
-  font-family: MJXZERO, MJXTEX-S3;
-}
-
-.TEX-S4 {
-  font-family: MJXZERO, MJXTEX-S4;
-}
-
-.TEX-A {
-  font-family: MJXZERO, MJXTEX-A;
-}
-
-.TEX-C {
-  font-family: MJXZERO, MJXTEX-C;
-}
-
-.TEX-CB {
-  font-family: MJXZERO, MJXTEX-CB;
-}
-
-.TEX-FR {
-  font-family: MJXZERO, MJXTEX-FR;
-}
-
-.TEX-FRB {
-  font-family: MJXZERO, MJXTEX-FRB;
-}
-
-.TEX-SS {
-  font-family: MJXZERO, MJXTEX-SS;
-}
-
-.TEX-SSB {
-  font-family: MJXZERO, MJXTEX-SSB;
-}
-
-.TEX-SSI {
-  font-family: MJXZERO, MJXTEX-SSI;
-}
-
-.TEX-SC {
-  font-family: MJXZERO, MJXTEX-SC;
-}
-
-.TEX-T {
-  font-family: MJXZERO, MJXTEX-T;
-}
-
-.TEX-V {
-  font-family: MJXZERO, MJXTEX-V;
-}
-
-.TEX-VB {
-  font-family: MJXZERO, MJXTEX-VB;
-}
-
-mjx-stretchy-v mjx-c, mjx-stretchy-h mjx-c {
-  font-family: MJXZERO, MJXTEX-S1, MJXTEX-S4, MJXTEX, MJXTEX-A ! important;
-}
-
-@font-face /* 0 */ {
-  font-family: MJXZERO;
-  src: url("https://cdn.jsdelivr.net/npm/mathjax@3/es5/output/chtml/fonts/woff-v2/MathJax_Zero.woff") format("woff");
-}
-
-@font-face /* 1 */ {
-  font-family: MJXTEX;
-  src: url("https://cdn.jsdelivr.net/npm/mathjax@3/es5/output/chtml/fonts/woff-v2/MathJax_Main-Regular.woff") format("woff");
-}
-
-@font-face /* 2 */ {
-  font-family: MJXTEX-B;
-  src: url("https://cdn.jsdelivr.net/npm/mathjax@3/es5/output/chtml/fonts/woff-v2/MathJax_Main-Bold.woff") format("woff");
-}
-
-@font-face /* 3 */ {
-  font-family: MJXTEX-I;
-  src: url("https://cdn.jsdelivr.net/npm/mathjax@3/es5/output/chtml/fonts/woff-v2/MathJax_Math-Italic.woff") format("woff");
-}
-
-@font-face /* 4 */ {
-  font-family: MJXTEX-MI;
-  src: url("https://cdn.jsdelivr.net/npm/mathjax@3/es5/output/chtml/fonts/woff-v2/MathJax_Main-Italic.woff") format("woff");
-}
-
-@font-face /* 5 */ {
-  font-family: MJXTEX-BI;
-  src: url("https://cdn.jsdelivr.net/npm/mathjax@3/es5/output/chtml/fonts/woff-v2/MathJax_Math-BoldItalic.woff") format("woff");
-}
-
-@font-face /* 6 */ {
-  font-family: MJXTEX-S1;
-  src: url("https://cdn.jsdelivr.net/npm/mathjax@3/es5/output/chtml/fonts/woff-v2/MathJax_Size1-Regular.woff") format("woff");
-}
-
-@font-face /* 7 */ {
-  font-family: MJXTEX-S2;
-  src: url("https://cdn.jsdelivr.net/npm/mathjax@3/es5/output/chtml/fonts/woff-v2/MathJax_Size2-Regular.woff") format("woff");
-}
-
-@font-face /* 8 */ {
-  font-family: MJXTEX-S3;
-  src: url("https://cdn.jsdelivr.net/npm/mathjax@3/es5/output/chtml/fonts/woff-v2/MathJax_Size3-Regular.woff") format("woff");
-}
-
-@font-face /* 9 */ {
-  font-family: MJXTEX-S4;
-  src: url("https://cdn.jsdelivr.net/npm/mathjax@3/es5/output/chtml/fonts/woff-v2/MathJax_Size4-Regular.woff") format("woff");
-}
-
-@font-face /* 10 */ {
-  font-family: MJXTEX-A;
-  src: url("https://cdn.jsdelivr.net/npm/mathjax@3/es5/output/chtml/fonts/woff-v2/MathJax_AMS-Regular.woff") format("woff");
-}
-
-@font-face /* 11 */ {
-  font-family: MJXTEX-C;
-  src: url("https://cdn.jsdelivr.net/npm/mathjax@3/es5/output/chtml/fonts/woff-v2/MathJax_Calligraphic-Regular.woff") format("woff");
-}
-
-@font-face /* 12 */ {
-  font-family: MJXTEX-CB;
-  src: url("https://cdn.jsdelivr.net/npm/mathjax@3/es5/output/chtml/fonts/woff-v2/MathJax_Calligraphic-Bold.woff") format("woff");
-}
-
-@font-face /* 13 */ {
-  font-family: MJXTEX-FR;
-  src: url("https://cdn.jsdelivr.net/npm/mathjax@3/es5/output/chtml/fonts/woff-v2/MathJax_Fraktur-Regular.woff") format("woff");
-}
-
-@font-face /* 14 */ {
-  font-family: MJXTEX-FRB;
-  src: url("https://cdn.jsdelivr.net/npm/mathjax@3/es5/output/chtml/fonts/woff-v2/MathJax_Fraktur-Bold.woff") format("woff");
-}
-
-@font-face /* 15 */ {
-  font-family: MJXTEX-SS;
-  src: url("https://cdn.jsdelivr.net/npm/mathjax@3/es5/output/chtml/fonts/woff-v2/MathJax_SansSerif-Regular.woff") format("woff");
-}
-
-@font-face /* 16 */ {
-  font-family: MJXTEX-SSB;
-  src: url("https://cdn.jsdelivr.net/npm/mathjax@3/es5/output/chtml/fonts/woff-v2/MathJax_SansSerif-Bold.woff") format("woff");
-}
-
-@font-face /* 17 */ {
-  font-family: MJXTEX-SSI;
-  src: url("https://cdn.jsdelivr.net/npm/mathjax@3/es5/output/chtml/fonts/woff-v2/MathJax_SansSerif-Italic.woff") format("woff");
-}
-
-@font-face /* 18 */ {
-  font-family: MJXTEX-SC;
-  src: url("https://cdn.jsdelivr.net/npm/mathjax@3/es5/output/chtml/fonts/woff-v2/MathJax_Script-Regular.woff") format("woff");
-}
-
-@font-face /* 19 */ {
-  font-family: MJXTEX-T;
-  src: url("https://cdn.jsdelivr.net/npm/mathjax@3/es5/output/chtml/fonts/woff-v2/MathJax_Typewriter-Regular.woff") format("woff");
-}
-
-@font-face /* 20 */ {
-  font-family: MJXTEX-V;
-  src: url("https://cdn.jsdelivr.net/npm/mathjax@3/es5/output/chtml/fonts/woff-v2/MathJax_Vector-Regular.woff") format("woff");
-}
-
-@font-face /* 21 */ {
-  font-family: MJXTEX-VB;
-  src: url("https://cdn.jsdelivr.net/npm/mathjax@3/es5/output/chtml/fonts/woff-v2/MathJax_Vector-Bold.woff") format("woff");
-}
-
-mjx-c.mjx-c1D702.TEX-I::before {
-  padding: 0.442em 0.497em 0.216em 0;
-  content: "\3B7";
-}
-</style></head>
+</head>
 
 <body>
 <div id="header">
@@ -478,623 +14,926 @@ mjx-c.mjx-c1D702.TEX-I::before {
 </div>
 
 <div id="navigation">
-    <a href="https://people.cs.uchicago.edu/~stuart/Functional-Programming-in-Haskell/index.html">Table of Contents</a>
+    <a href="../../index.html">Table of Contents</a>
 </div>
 
 <div id="content">
 
-<h1>
-
-Chapter 26:
-
-Lenses
-</h1>
+<h1>A Compiler for a VLIW+SIMD Accelerator</h1>
 
 <div class="pullquote">
-<p>The wand chooses the wizard, Mr.&nbsp;Potter. It’s not always clear why. But
-I think it is clear that we can expect great things from you. After all,
-He-Who-Must-Not-Be-Named did great things. Terrible! Yes. But great.</p>
+<p>The purpose of computing is insight, not numbers.</p>
+<p>&mdash; Richard Hamming</p>
 </div>
+
 <h2 id="introduction">Introduction</h2>
-<p>The idea of a lens is simple, it’s a type whose values somehow
-<em>provides access</em> to a constituent part of a complex value:</p>
-<p><img src="./writeup/Lens.png"></p>
-<p>The particular form of <code>Lens</code> here is local to this lecture, as subsequent
-events will lead us to deal with more complex types.</p>
-<p>The choice of the word <em>access</em> conveys a sort of pedagogical malice: on first
-exposure, access seems to be about <em>getters</em> and <em>setters</em>, but then <em>mutators</em>
-can’t be far behind, as are other access patterns.</p>
-<p>Having introduced the discussion of lenses via, “The idea of a lens is simple,”
-and knowing me, you might believe that there are things about lenses that aren’t
-simple. You’d be right. You might have heard something of lenses, and how
-“lens-heavy” Haskell code looks quite odd, even to experienced Haskell
-programmers. That’s right too. There is a division in the community as to
-whether lenses are worth the fuss, especially in as much as developing facility
-with lenses seems almost as daunting as developing facility with Haskell was in
-the first place. There’s a complicated story there, and we’ll reveal it in
-pieces as we go along.</p>
-<p>Let’s start by considering a small pedagogical example. We want to
-model a classroom, so we have a simple type definition:</p>
-<pre><code>data Class = Class
-  { title :: String
-  , professor :: Professor
+
+<p>This document describes the design of a small optimizing compiler, written in
+Haskell, that targets a VLIW+SIMD accelerator. The compiler takes a fixed kernel
+&mdash; a program that hashes and traverses a forest data structure &mdash; and
+transforms it through a series of pure functional passes into a flat list of
+<em>bundles</em>, each representing one cycle of parallel work on the target machine.
+Along the way the compiler performs constant folding, automatic vectorization,
+peephole optimization, instruction lowering, and VLIW instruction packing.</p>
+
+<p>The entire compiler is 1,400 lines of Haskell across 11 modules. Every
+pass is a pure function from one representation to the next. There are no
+mutable data structures, no IO in the compilation pipeline, and no
+monadic plumbing beyond a small <code>State</code> monad in two places (the IR builder
+and the lowering pass). The result is a compiler whose passes compose like
+ordinary functions:</p>
+
+<pre><code>let fn   = scalarKernel rounds batchSize
+    fn'  = combineMulAdd . vectorizeBatch 8 . canonicalize $ fn
+    ops  = lowerToMachineOps 8 fn'
+    bundles = bundleProgram ops</code></pre>
+
+<p>Each of these names is a pure function, and the whole pipeline is an expression
+whose value is the final program. This is a very Haskell way to build a
+compiler, and it&rsquo;s worth understanding both <em>why</em> it works and <em>what</em> each
+piece does.</p>
+
+<h2 id="target-machine">The Target Machine</h2>
+
+<p>Before discussing the compiler, we should understand the machine it
+targets. The accelerator is a VLIW (very long instruction word) processor with
+SIMD (single instruction, multiple data) support. Each cycle, it can issue
+instructions to five independent <em>execution engines</em> in parallel:</p>
+
+<table>
+<tr><th>Engine</th><th>Max Slots/Cycle</th><th>Operations</th></tr>
+<tr><td><strong>ALU</strong></td><td style="text-align:center">12</td><td>Scalar arithmetic: <code>+</code>, <code>-</code>, <code>*</code>, <code>//</code>, <code>^</code>, <code>&amp;</code>, <code>|</code>, <code>&lt;&lt;</code>, <code>&gt;&gt;</code>, <code>%</code>, <code>&lt;</code>, <code>==</code></td></tr>
+<tr><td><strong>VALU</strong></td><td style="text-align:center">6</td><td>8-wide SIMD versions of the above, plus <code>vbroadcast</code> and <code>multiply_add</code></td></tr>
+<tr><td><strong>Load</strong></td><td style="text-align:center">2</td><td><code>load</code>, <code>load_offset</code>, <code>vload</code> (8 consecutive words), <code>const</code> (immediate)</td></tr>
+<tr><td><strong>Store</strong></td><td style="text-align:center">2</td><td><code>store</code>, <code>vstore</code> (8 consecutive words)</td></tr>
+<tr><td><strong>Flow</strong></td><td style="text-align:center">1</td><td><code>select</code>, <code>vselect</code>, <code>halt</code>, <code>pause</code>, jumps</td></tr>
+</table>
+
+<p>A single cycle can therefore issue up to 12+6+2+2+1 = 23 operations. The
+register file is a flat <em>scratch-pad</em> addressed by integer index
+(<code>ScratchAddr</code>). SIMD operations work on blocks of 8 consecutive scratch
+addresses. Memory is flat and word-addressable. Within a single bundle (one
+cycle), all reads see the state from the <em>beginning</em> of the cycle, and all
+writes commit atomically at the end &mdash; there is no intra-bundle
+forwarding.</p>
+
+<p>The compiler&rsquo;s job is twofold: (a) <em>vectorize</em> scalar code to use 8-wide SIMD
+where legal, and (b) <em>pack</em> independent operations into each bundle to exploit
+the parallelism of the VLIW execution model.</p>
+
+<p>The ISA is defined as a shared Haskell library (<code>src/ISA.hs</code>) that both the
+compiler and the simulator import. This means the compiler constructs typed ISA
+values &mdash; actual <code>AluSlot</code>, <code>ValuSlot</code>, <code>LoadSlot</code> values &mdash; and the
+simulator pattern-matches on the same constructors to execute them. If someone
+adds a new <code>AluOp</code> variant, both the compiler and simulator get non-exhaustive
+pattern warnings until they handle it. <strong>The types guarantee that the compiler can
+only emit instructions the simulator knows how to execute.</strong></p>
+
+<h2 id="lifecycle">The Lifecycle of a Program</h2>
+
+<p>A program passes through seven stages, each a pure function that transforms the
+previous stage&rsquo;s output:</p>
+
+<pre><code>  scalarKernel        -- build the IR            (BaselineKernel.hs)
+      |
+  canonicalize        -- constant fold           (Canonicalize.hs)
+      |
+  vectorizeBatch      -- auto-vectorize loops    (Vectorize.hs)
+      |
+  combineMulAdd       -- peephole: mul+add&rarr;madd  (Peephole.hs)
+      |
+  lowerToMachineOps   -- lower to machine ops    (FinalLowering.hs)
+      |
+  bundleProgram       -- VLIW bundle packing     (Bundle.hs)
+      |
+  renderProgramPayload -- emit Python literal    (PythonInterop.hs)</code></pre>
+
+<p>The first four stages operate on <code>Function</code>, the compiler&rsquo;s intermediate
+representation. <code>lowerToMachineOps</code> converts to <code>[MachineOp]</code>, a flat
+list of individual machine instructions with metadata.
+<code>bundleProgram</code> packs those into <code>[ISA.Bundle ()]</code>, the final VLIW bundles.
+<code>renderProgramPayload</code> serializes the bundles as a Python dict literal that the
+test harness evaluates.</p>
+
+<p>Let us now examine each stage in detail.</p>
+
+<h2 id="the-ir">The Intermediate Representation (<code>FinalIR.hs</code>)</h2>
+
+<p>The IR is the heart of the compiler. It is a small structured-SSA language with
+three key design properties:</p>
+
+<p><strong>1. SSA values.</strong> Every <code>Let</code> introduces a fresh <code>Id</code> that is defined exactly
+once and used by later statements through <code>Expr = Var Id | Const Word32</code>.
+This is the <em>static single assignment</em> discipline: each name is assigned exactly
+once, and that definition dominates all uses. This makes dataflow analysis
+trivial &mdash; to find where a value comes from, you look up its (unique)
+definition.</p>
+
+<p><strong>2. Structured control flow.</strong> The only looping construct is <code>For</code>, which
+carries its bounds and body inline. There are no arbitrary gotos, no basic
+blocks, no phi nodes. The IR is a tree, not a graph. This means loop
+transformations are <em>tree rewrites</em> rather than graph surgeries.</p>
+
+<p><strong>3. Named memory regions.</strong> Loads and stores address a <code>Buffer</code> (a symbolic
+memory region) at an <code>Expr</code> offset, instead of raw pointer arithmetic. This is
+what makes the IR <em>analyzable</em>.</p>
+
+<h3 id="types">Types</h3>
+
+<pre><code>data Ty = I32 | Vec !Int !Ty</code></pre>
+
+<p><code>I32</code> is a scalar 32-bit integer. <code>Vec w I32</code> is a vector of <code>w</code> scalars,
+corresponding to <code>w</code> consecutive scratch-pad slots at the machine level. The
+kernel starts entirely scalar; the vectorizer introduces <code>Vec</code> types.</p>
+
+<p>There is no <code>Ptr</code>, no <code>Mask</code>, no <code>Mem</code> token type. Pointers are
+represented as <code>I32</code> values. Memory ordering follows statement order. Boolean
+conditions are <code>I32</code> values (0 = false, nonzero = true). This simplicity is a
+deliberate choice, and we will examine the alternative &mdash; a richer type
+system with pointer types and memory tokens &mdash; later in this document.</p>
+
+<h3 id="buffers">Buffers: Symbolic Memory</h3>
+
+<pre><code>data Buffer = Header | Forest | InpIdx | InpVal</code></pre>
+
+<p>These four constructors correspond 1:1 to the memory regions the test harness
+allocates:</p>
+
+<table>
+<tr><th>Buffer</th><th>Harness Region</th><th>Contents</th></tr>
+<tr><td><code>Header</code></td><td>header words</td><td>rounds, n_nodes, batch_size, forest_height, 3 base pointers</td></tr>
+<tr><td><code>Forest</code></td><td>forest_values</td><td>Tree node array</td></tr>
+<tr><td><code>InpIdx</code></td><td>inp_indices</td><td>Current index for each batch element</td></tr>
+<tr><td><code>InpVal</code></td><td>inp_values</td><td>Current value for each batch element</td></tr>
+</table>
+
+<p>Using symbolic buffer names instead of raw pointers is the single most
+important design decision in the IR. It is what makes the vectorizer
+<em>possible</em> without a general-purpose alias analysis. The vectorizer can ask,
+&ldquo;Does this load use the induction variable as an index into
+<code>InpIdx</code>?&rdquo; by pattern-matching on the buffer name. It never needs to solve the
+undecidable problem of whether two arbitrary pointer expressions might alias.</p>
+
+<h3 id="load-store-kinds">Load and Store Kinds</h3>
+
+<pre><code>data LoadKind  = LoadScalar | LoadContigVec !Int | LoadGatherVec !Int
+data StoreKind = StoreScalar | StoreContigVec !Int</code></pre>
+
+<p>The <code>Kind</code> tags record <em>how wide</em> a memory access is. The kernel emits only
+<code>LoadScalar</code>/<code>StoreScalar</code>. The vectorizer rewrites eligible accesses to
+<code>LoadContigVec w</code> (contiguous vector load of <code>w</code> words),
+<code>LoadGatherVec w</code> (indexed gather of <code>w</code> words at data-dependent offsets),
+or <code>StoreContigVec w</code>. The lowering then selects the correct machine
+instruction based on this tag: <code>load</code> vs. <code>vload</code> vs. <code>load_offset</code>,
+<code>store</code> vs. <code>vstore</code>.</p>
+
+<p>This is an instance of a useful compiler design pattern: the analysis pass
+(Vectorize) communicates its decisions to the code-generation pass (Lowering)
+<em>declaratively</em>, by rewriting the IR, rather than through side channels.
+Each pass is a pure function from <code>Function &rarr; Function</code>, and the information
+flows through the data.</p>
+
+<h3 id="rhs">Right-Hand Sides</h3>
+
+<p>Every value-producing computation is one <code>Rhs</code> variant:</p>
+
+<table>
+<tr><th>Constructor</th><th>Meaning</th><th>Introduced by</th></tr>
+<tr><td><code>RConst w</code></td><td>32-bit literal</td><td>Kernel</td></tr>
+<tr><td><code>RBin op a b</code></td><td>Binary ALU operation</td><td>Kernel</td></tr>
+<tr><td><code>RMulAdd a b c</code></td><td>Fused multiply-add: <code>a*b + c</code></td><td>Peephole pass</td></tr>
+<tr><td><code>RSelect c a b</code></td><td>Conditional select: <code>c &ne; 0 ? a : b</code></td><td>Kernel</td></tr>
+<tr><td><code>RLoad kind buf ix</code></td><td>Load from <code>buf[ix]</code></td><td>Kernel; kind rewritten by Vectorize</td></tr>
+<tr><td><code>RVBroadcast w e</code></td><td>Broadcast scalar to vector</td><td>(Available for future use)</td></tr>
+</table>
+
+<p><code>RBin</code> takes <code>AluOp</code> directly from the shared <code>ISA.hs</code> library &mdash; the
+same enum the simulator uses. This means the compiler and simulator agree on
+the set of operations by construction.</p>
+
+<p><code>RSelect</code> replaces traditional if-conversion. Instead of <code>if c then a else b</code>
+as a control-flow construct, the kernel uses <code>RSelect</code> directly, which lowers
+to the simulator&rsquo;s <code>select</code> (scalar) or <code>vselect</code> (vector) flow slot. This
+avoids the need for a separate if-conversion pass entirely.</p>
+
+<p><code>RMulAdd</code> does not appear in the initial kernel. It is introduced by the
+peephole pass when it discovers a <code>Mul</code> followed by an <code>Add</code>. The lowering maps
+it to a single <code>multiply_add</code> VALU slot for vectors, or two ALU slots (mul
+then add) for scalars.</p>
+
+<h3 id="stmts">Statements</h3>
+
+<pre><code>data Stmt
+  = Let !Id !Ty !Rhs
+  | Store !StoreKind !Buffer !Expr !Expr
+  | For !Id !Int !Int !Int ![Stmt]   -- iv, start, end, step, body</code></pre>
+
+<p><code>Let</code> introduces a new SSA value. <code>Store</code> is a side effect.
+<code>For</code> is a counted loop with compile-time integer bounds and a step. The body
+is an inline list of statements, not a reference &mdash; the IR is a tree.
+Statement order determines memory ordering. There are no explicit memory tokens
+or effect edges. This is sound because all loops are fully unrolled during
+lowering, and within a single unrolled iteration the statement sequence
+<em>is</em> the execution sequence.</p>
+
+<h3 id="builder">The Builder Monad</h3>
+
+<pre><code>newtype Build a = Build { unBuild :: State BuildSt a }
+
+emitLet   :: Ty -&gt; Rhs -&gt; Build Expr      -- emit Let, return the Var
+emitStore :: StoreKind -&gt; Buffer -&gt; Expr -&gt; Expr -&gt; Build ()
+emitFor   :: Int -&gt; Int -&gt; Int -&gt; (Expr -&gt; Build ()) -&gt; Build ()</code></pre>
+
+<p><code>Build</code> is a thin wrapper around <code>State</code> that provides a convenient
+monadic API for constructing IR. <code>emitLet</code> allocates a fresh <code>Id</code>, appends a
+<code>Let</code> statement, and returns the new <code>Var</code> as an <code>Expr</code>.</p>
+
+<p>The interesting piece is <code>emitFor</code>: it takes a callback that receives the
+induction variable as an <code>Expr</code> and builds the loop body. Internally,
+<code>capture</code> temporarily redirects the statement buffer so that body statements
+don&rsquo;t escape into the outer scope &mdash; a common technique for structured-SSA
+builders. The body is captured, the outer buffer is restored, and the captured
+body is wrapped in a <code>For</code> node. This is the kind of thing that Haskell&rsquo;s
+first-class functions and closures make natural: the body-building callback
+closes over the induction variable and the enclosing environment, and the
+builder captures the side effects (emitted statements) without any of them
+leaking.</p>
+
+<h3 id="why-this-ir">Why This IR Design?</h3>
+
+<p>Each design choice has a concrete consequence for the passes that follow:</p>
+
+<table>
+<tr><th>Decision</th><th>Consequence</th></tr>
+<tr><td>Named <code>Buffer</code> instead of raw pointers</td><td>Vectorizer uses pattern matching, not alias analysis</td></tr>
+<tr><td><code>LoadKind</code>/<code>StoreKind</code> tags</td><td>Vectorizer communicates access pattern to lowering declaratively</td></tr>
+<tr><td><code>For</code> with inline body</td><td>No CFG, no phi nodes; loop transformations are tree rewrites</td></tr>
+<tr><td><code>Ty</code> on every <code>Let</code></td><td>Lowering dispatches scalar vs. vector without re-inferring types</td></tr>
+<tr><td><code>AluOp</code> from shared <code>ISA.hs</code></td><td>Compiler and simulator agree on operations by construction</td></tr>
+<tr><td>No memory tokens</td><td>Simpler IR; valid because loops are fully unrolled</td></tr>
+<tr><td><code>Expr = Var | Const</code></td><td>Constants appear directly in operands; enables simple folding</td></tr>
+</table>
+
+<h2 id="kernel">The Kernel (<code>BaselineKernel.hs</code>)</h2>
+
+<p><code>scalarKernel :: Int -&gt; Int -&gt; Function</code> builds the baseline kernel using the
+<code>Build</code> monad. The two parameters are <code>rounds</code> (outer loop count) and
+<code>batchSize</code> (inner loop count). The result is a purely scalar <code>Function</code> with
+all types <code>I32</code>, all loads/stores scalar, and all loop steps equal to 1.</p>
+
+<p>The kernel&rsquo;s structure is:</p>
+
+<p><strong>1. Header loads</strong> (7 scalar loads from <code>Header[0..6]</code>): metadata including
+<code>nNodes</code> (the tree size, used for wrap-around) and base pointers for each
+memory region. The pointer fields are loaded but unused in the IR &mdash; the
+lowering resolves buffer names to header slots directly.</p>
+
+<p><strong>2. Outer loop</strong> over rounds.</p>
+
+<p><strong>3. Inner loop</strong> over the batch: for each element <code>i</code>:</p>
+<ul>
+<li>Load <code>idx</code> from <code>InpIdx[i]</code> and <code>val</code> from <code>InpVal[i]</code>.</li>
+<li>Load the tree node from <code>Forest[idx]</code>.</li>
+<li>XOR <code>val</code> with the node and hash the result through 6 stages.</li>
+<li>Compute the next index: <code>idx*2 + (1 if hash%2==0, else 2)</code>.</li>
+<li>Wrap: if <code>nextIdx &ge; nNodes</code> then <code>nextIdx = 0</code>.</li>
+<li>Store the new index and hashed value back.</li>
+</ul>
+
+<p><strong>4. Hash function</strong> (<code>emitHash</code>): The 6-stage integer hash uses a table of
+<code>(op1, const1, op2, op3, const3)</code> tuples. Each stage computes
+<code>a = op2(op1(a, const1), op3(a, const3))</code>, matching the Python harness exactly.
+This is a nice example of Haskell&rsquo;s expressiveness: the entire hash pipeline
+is a <code>foldl</code> over the stage table, with each step emitting IR via the builder
+monad.</p>
+
+<pre><code>emitHash :: Expr -&gt; Build Expr
+emitHash a0 = foldl go (pure a0) hashStages
+  where
+    go ma (op1, c1, op2, op3, c3) = do
+      a  &lt;- ma
+      t1 &lt;- emitLet I32 (RBin op1 a (Const c1))
+      t2 &lt;- emitLet I32 (RBin op3 a (Const c3))
+      emitLet I32 (RBin op2 t1 t2)</code></pre>
+
+<p>Note the use of <code>foldl</code> over a list of stage descriptors, with the accumulator
+being a monadic computation (<code>Build Expr</code>). Each step sequences the monadic
+action from the previous stage with two new let-bindings and their combination.
+The <code>&lt;-</code> extracts the value from the accumulated monadic computation, and
+<code>emitLet</code> adds to it. This is a pattern that arises frequently when building IR
+in a functional style: the monad provides sequencing and naming, while
+higher-order functions provide structure.</p>
+
+<h2 id="canonicalize">Pass 1: Canonicalize (<code>Canonicalize.hs</code>)</h2>
+
+<p>The first pass performs constant propagation and constant folding in a single
+forward traversal.</p>
+
+<p>The mechanism is straightforward: <code>goBlock</code> walks statements in order, maintaining
+an environment <code>Map Id Word32</code> of SSA values known to be constant. For
+each <code>Let</code>:</p>
+
+<ol>
+<li><code>simpRhs</code> substitutes known-constant <code>Var</code>s with <code>Const</code> in the RHS operands.</li>
+<li><code>rhsConst</code> checks whether the simplified RHS is fully constant (e.g.,
+<code>RBin Add (Const 3) (Const 5)</code> folds to <code>RConst 8</code>).</li>
+<li>If so, the <code>Id</code> is added to the constant environment for use by later statements.</li>
+</ol>
+
+<p><code>evalAluOp</code> implements all 13 <code>AluOp</code> variants in 32-bit modular arithmetic,
+matching the simulator&rsquo;s semantics. This function is defined once and is
+correct by construction: it handles every constructor of <code>AluOp</code>, and a
+non-exhaustive pattern warning would fire if a new operation were added to
+<code>ISA.hs</code> without updating the evaluator.</p>
+
+<p>For <code>For</code> loops, the induction variable is <em>deleted</em> from the constant map when
+entering the body, since it takes different values on each iteration. Constants
+defined outside the loop remain visible inside.</p>
+
+<p>For <code>RSelect</code>, if both branches are the same expression, the condition is
+replaced with <code>Const 1</code> &mdash; a signal to later passes that the select is
+trivially dead.</p>
+
+<p>Why does this pass matter for what follows? Canonicalization ensures the
+vectorizer sees clean operands rather than chains of trivially-constant lets.
+It also means the lowering&rsquo;s constant-materialization cache has fewer unique
+constants to emit, reducing code size.</p>
+
+<h2 id="vectorize">Pass 2: Vectorize (<code>Vectorize.hs</code>)</h2>
+
+<p>This is the core optimization. It rewrites eligible inner loops from scalar
+(step 1) to SIMD (step <code>w</code>, typically 8), turning scalar loads/stores into
+vector loads/stores and promoting arithmetic to vector width.</p>
+
+<h3 id="vectorize-legality">Legality</h3>
+
+<p>The vectorizer must first determine whether it is <em>legal</em> to vectorize a loop.
+The answer is yes only if the induction variable <code>iv</code> is used <em>exclusively</em> as
+a direct index into <code>InpIdx</code> or <code>InpVal</code>. Concretely, <code>iv</code> may appear in:</p>
+
+<ul>
+<li><code>RLoad LoadScalar InpIdx (Var iv)</code> &mdash; loading from inp_indices at the batch index</li>
+<li><code>RLoad LoadScalar InpVal (Var iv)</code> &mdash; loading from inp_values at the batch index</li>
+<li><code>Store StoreScalar InpIdx (Var iv) _</code> &mdash; storing to inp_indices</li>
+<li><code>Store StoreScalar InpVal (Var iv) _</code> &mdash; storing to inp_values</li>
+</ul>
+
+<p>And it must <em>not</em> appear in arithmetic operands, non-InpIdx/InpVal loads, or
+nested loops.</p>
+
+<p>This is a <em>conservative map vectorizer</em>: it vectorizes loops where each
+iteration is independent and the induction variable maps to a contiguous
+memory range. The check is purely syntactic &mdash; it pattern-matches on
+<code>Buffer</code> and <code>Expr</code> instead of doing a general dependence analysis.
+Named <code>Buffer</code> regions are what make this possible. Without them, the
+vectorizer would need to prove that two pointer expressions don&rsquo;t alias,
+which is undecidable in general.</p>
+
+<h3 id="strip-mining">Strip-Mining and Tail Loops</h3>
+
+<p>When the trip count is not divisible by the SIMD width <code>w</code>, the vectorizer
+performs <em>strip-mining</em>:</p>
+
+<pre><code>vecEnd = start + (tripCount / w) * w
+
+For iv start  vecEnd w  [vectorized body]    -- main loop
+For iv vecEnd end    1  [scalar body]        -- tail loop</code></pre>
+
+<p>If <code>vecEnd &le; start</code> (trip count &lt; <code>w</code>), no vectorization occurs. If
+<code>vecEnd == end</code> (evenly divisible), no tail loop is emitted. For the default
+<code>batchSize=256</code> with <code>w=8</code>, the trip count is exactly divisible, so no tail
+is needed. For <code>batchSize=10</code>, the main loop processes elements 0&ndash;7 and
+the tail processes 8&ndash;9.</p>
+
+<h3 id="rewriting">Rewriting</h3>
+
+<p>Within the vectorized loop body, the vectorizer rewrites each statement:</p>
+
+<p><strong>Loads.</strong> <code>RLoad LoadScalar InpIdx (Var iv)</code> becomes
+<code>RLoad (LoadContigVec w) InpIdx (Var iv)</code>. The load was reading one element at
+the batch index; now it reads <code>w</code> contiguous elements. The forest load
+<code>RLoad LoadScalar Forest idx</code> becomes <code>RLoad (LoadGatherVec w) Forest idx</code>
+when its index has been promoted to a vector, because the forest indices are
+data-dependent and therefore not contiguous.</p>
+
+<p><strong>Stores.</strong> <code>Store StoreScalar InpIdx (Var iv) v</code> becomes
+<code>Store (StoreContigVec w) InpIdx (Var iv) v</code>.</p>
+
+<p><strong>Arithmetic.</strong> <code>RBin</code>, <code>RSelect</code>, <code>RMulAdd</code> are structurally unchanged. The
+<em>type</em> is promoted by <code>inferTy</code>: if any operand is a <code>Vec</code>, the result is
+<code>Vec w I32</code>. Otherwise <code>I32</code>.</p>
+
+<p>This propagation is what causes <em>vector infection</em>: once <code>InpIdx</code>/<code>InpVal</code>
+loads become vectors, every downstream computation &mdash; XOR, all six hash
+stages, mod, select, multiply &mdash; gets promoted too. The forest load
+becomes a gather because its index (which came from the now-vectorized
+<code>InpIdx</code> load) is a vector.</p>
+
+<h3 id="vectorize-limits">What the Vectorizer Does Not Do</h3>
+
+<p>The vectorizer does not handle reductions (loop-carried dependencies). It does
+not vectorize loops with nested loops. It does not handle strided access
+patterns. It does not reorder statements. These are deliberate simplifications.
+The baseline kernel&rsquo;s inner loop is a pure map (no cross-iteration state), so
+the simple check is sufficient.</p>
+
+<h2 id="peephole">Pass 3: Peephole (<code>Peephole.hs</code>)</h2>
+
+<p>The peephole pass scans the statement list for adjacent pairs:</p>
+
+<pre><code>Let t (Vec w I32) (RBin Mul a b)
+Let y (Vec w I32) (RBin Add (Var t) c)    -- or (RBin Add c (Var t))</code></pre>
+
+<p>where <code>t</code> is not used anywhere after <code>y</code>. It replaces both with:</p>
+
+<pre><code>Let y (Vec w I32) (RMulAdd a b c)</code></pre>
+
+<p>This is vector-only because the simulator has a <code>multiply_add</code> VALU instruction
+but no scalar fused-multiply-add. The vector version saves a VALU slot and a
+scratch register.</p>
+
+<p>The dead-use check (<code>usesId</code>) traverses all subsequent statements, including
+nested loop bodies, to verify <code>t</code> doesn&rsquo;t appear. This is conservative but
+sufficient for the straight-line hash pipeline.</p>
+
+<h2 id="machine">The Machine Model (<code>Machine.hs</code>)</h2>
+
+<p>After the IR passes, the program is lowered to a sequence of
+<code>MachineOp</code> values. These bridge the gap between the IR (which knows about
+buffers and types) and the ISA (which knows about scratch addresses and
+instruction slots).</p>
+
+<pre><code>data MachineSlot
+  = MSlotAlu   !AluSlot
+  | MSlotValu  !ValuSlot
+  | MSlotLoad  !LoadSlot
+  | MSlotStore !StoreSlot
+  | MSlotFlow  !FlowSlot
+
+data MachineOp = MachineOp
+  { moSlot   :: !MachineSlot
+  , moReads  :: ![Int]       -- scratch addresses read
+  , moWrites :: ![Int]       -- scratch addresses written
+  , moMem    :: ![MemAccess] -- memory regions accessed
   }</code></pre>
-<p>The <code>Professor</code> type is also complex, which we’ll model in
-much the same spirit:</p>
-<pre><code>data Professor = Professor
-  { name :: String
-  , coffee :: CoffeeCup
-  , chalk :: ChalkState
-  }</code></pre>
-<p>We have complex types for <code>CoffeeCup</code> and <code>Chalk</code>:</p>
-<pre><code>data CoffeeCup = CoffeeCup
-  { capacity :: Double -- liters
-  , quantity :: Double -- liters
-  }
 
-data ChalkState = Whole | Broken</code></pre>
-<p>With these definitions in place, we’re asked to write a function that
-updates a <code>Class</code> value by having the prof take a sip from his coffee.
-At this point, a C programmer working with an analogous set of
-definitions might write this:</p>
-<pre><code>class.professor.coffee_cup.quantity -= 0.001; // 1 cc = 1 ml `</code></pre>
-<p>and then turn to us, saying, “OK, Mr.&nbsp;Fancy Pants Functional
-Programmer, let’s see you do better.” It does not go well.
-Our first attempt looks like this:</p>
-<pre><code>sip :: Class -&gt; Class
-sip cls =
-  let prof = professor cls
-      cup = coffee prof
-      q = quantity cup
-      q' = q-0.001
-      cup' = cup { capacity=q' }
-      prof' = prof { coffee=cup'}
-  in cls { professor = prof' }</code></pre>
-<p>Ouch! This is not functional programming’s finest hour, and functional
-programmers do not like it when procedural programmers laugh at them.
-This seems wildly cumbersome.</p>
-<p>And it’s annoying too, for two somewhat different reasons: (1) we realize that
-we’re going to have to do a lot of this, e.g., writing code that models the prof
-refilling his coffee cup, or dropping his chalk and breaking it; and (2) we have
-a sense that the code above involves unwrapping a data structure to get at an
-inner value, modifying that inner value, and then re-wrapping the modified inner
-value to get a modified outer value. If we could somehow abstract out single
-steps of doing that, we’d have a <em>compositional</em> approach to the problem.</p>
-<p>For example, consider</p>
-<pre><code>modQuantity :: (Double -&gt; Double) -&gt; CoffeeCup -&gt; CoffeeCup
-modQuantity f cup = cup { quantity = f (quantity cup) }</code></pre>
-<p>The <code>modQuantity</code> function lifts a function that modifies a quantity
-into a function that modifies a <code>CoffeeCup</code>. In effect, it is a
-component-specific analogue to <code>fmap</code>. Much as we can compose <code>fmap</code>
-with itself to lift a simple function into a context of nexted Functors,
-so to can we compose these “component-wise <code>fmap</code>s” into a function that
-reaches into the structure of a complex object, modifies a piece of it
-(non-destructively, of course) and returns the updated complex object.
-Thus,</p>
-<pre><code>modCoffee :: (CoffeeCup -&gt; CoffeeCup) -&gt; Professor -&gt; Professor
-modCoffee f prof = prof { coffee = f (coffee prof) }
+<p>Each <code>MachineSlot</code> wraps one of the typed slot ADTs from <code>ISA.hs</code>. For
+example, <code>MSlotAlu (Alu Add (ScratchAddr 10) (ScratchAddr 5) (ScratchAddr 6))</code>
+represents a scalar add writing scratch 10. The slot carries full type
+information &mdash; not strings &mdash; so the bundler extracts typed slot lists
+directly into the final <code>ISA.Bundle</code>.</p>
 
-modProfessor :: (Professor -&gt; Professor) -&gt; Class -&gt; Class
-modProfessor f cls = cls { professor = f (professor cls) }
+<p>The metadata fields (<code>moReads</code>, <code>moWrites</code>, <code>moMem</code>) are what the bundler uses
+to determine which operations can safely share a cycle. For a scalar op,
+<code>moWrites</code> is a single address; for a vector op, it&rsquo;s <code>w</code> consecutive
+addresses. <code>MemAccess</code> records describe the memory region, direction
+(load/store), and optional address range for each memory operation. An
+<code>Unknown</code> range conservatively prevents packing with any other access to the
+same region.</p>
 
-sip' :: Class -&gt; Class
-sip'=
-  = modProfessor 
-  . modCoffee 
-  . modQuantity 
-  $ subtract 0.001</code></pre>
-<p>This isn’t code that’s going to make a procedural programmer jealous, but we
-have good reason to feel better about ourselves, as we have a clear path to
-implement the other mutators that are likely to be required: we provide atomic
-<code>fmap</code>-like functions (mutators) for each component of a product type, and then
-define mutators on complex types via compositions of the atomic mutators.</p>
-<p>There are some things to be pleased about here, and some things to be
-disappointed in. Haskell’s record syntax does a good job of providing us with
-<em>getters</em> for algebraic data types, but poor job with <em>setters</em> and <em>mutators</em>.
-Much of the code above consisted of writing mutators, all with essentially the
-same structure (produce a modified value by modifying one of its components),
-but this similarity isn’t something we can capture with Haskell itself. But once
-we write those tools for ourselves, they can be combined in useful ways to build
-up access functions that work on more complex data values.</p>
-<p>Indeed, we soon realize that our procedural programmer’s implementation
-of <code>sip</code> is a bit glib: if the prof tries to sip from an empty cup,
-they’re not going to end up with a negative amount of coffee. We can
-easily modify our code to reflect the complexities of a more correct
-computation:</p>
-<pre><code>sip' :: Class -&gt; Class
-sip'=
-  = modProfessor 
-  . modCoffee 
-  . modQuantity 
-  $ \ q -&gt; 0 `max` q - 0.001</code></pre>
-<p>This isn’t a terrible challenge for our procedural programer’s code,
-but the transformation is less trivial, because while C provides
-mutation operators associated with the standard binary operations, it
-doesn’t have a simple syntax for describing more complicated mutations.
-Thus,</p>
-<pre><code>class.professor.quantity = 
-  max(0.0,class.professor.quantity - 0.001);</code></pre>
-<p>Even though this is shorter than what we wrote, our C programming friend
-instinctively understands that there’s something not altogether
-wholesome in have to specify the sequence of field records twice, a
-defect that the Haskell code avoids. He’s not sure that what we’ve
-gained justifies our conceptual overheads, but at least, we’ve got him
-mumbling about compiler optimizations, and he’s stopped laughing.</p>
-<p>We don’t have the full power of lenses here, and we haven’t yet tried
-to build that power, but this initial investigation has provided some
-fruitful ideas, which will come back with surprising force later on.</p>
-<h2 id="naïve-lenses">Naïve Lenses</h2>
-<p>Our immediate goal is to develop a first class <code>Lens s a</code> type whose
-values provide access to a component of type <code>a</code> within a value of type
-<code>s</code>. To that end, we write:</p>
-<pre><code>data Lens s a = Lens 
-  { view :: s -&gt; a
-  , set :: a -&gt; s -&gt; s 
-  }</code></pre>
-<p>A common pattern is that we’ll have a <code>Lens s t</code>, a value that given access to a
-value of type <code>s</code>, gives us access to a constituent of type <code>t</code>, and a <code>Lens t u</code>, and we want to combine them to form a <code>Lens s u</code>. To do this, we’ll define
-<code>(&lt;.&gt;) :: Lens s t -&gt; Lens t u -&gt; Lens s u</code>, a <em>lens composition operator</em> which
-we can visualize as</p>
-<p><img src="./writeup/composition.png"></p>
-<p>and implement as</p>
-<pre><code>infix 9 &lt;.&gt;
+<h2 id="lowering">Lowering (<code>FinalLowering.hs</code>)</h2>
 
-(&lt;.&gt;) :: Lens s t -&gt; Lens t u -&gt; Lens s u
-lst &lt;.&gt; ltu = Lens 
-  { view = view ltu . view lst
-  , set = \ u s -&gt; 
-      let t = view lst s
-          t' = set ltu u t
-      in set lst t' s
-  }</code></pre>
-<p>We’ll also provide a mutator <code>over</code> defined in terms of our lens:</p>
-<pre><code>over :: Lens s a -&gt; (a -&gt; a) -&gt; (s -&gt; s) 
-over lsa f s = set lsa (f a) s where 
-  a = view lsa s `</code></pre>
-<p>With these definitions, let’s set about reworking our professor with
-coffee example.</p>
-<p>First, we’re going to want to use names <code>professor</code> and <code>coffee</code> to
-name lenses, rather than fields. Indeed, because of the way we’re going
-to use lenses to organize access to components of values, we’re not
-going to need the field names, except to define the primitive lenses,
-so those field names can be “garbaged up” a bit. To that end, we define</p>
-<pre><code>module NewClasses where
+<p>The lowering pass is the largest module (478 lines) because it handles
+scratch-pad allocation, address computation, constant materialization, loop
+unrolling, and the scalar/vector dispatch for every <code>Rhs</code> variant.</p>
 
-import MicroLens
+<h3 id="scratch-layout">Scratch-Pad Layout</h3>
 
--- ========================================
--- Class
+<p>The lowering allocates scratch-pad addresses in a single up-front pass:</p>
 
-data Class = Class
-  { _title :: String
-  , _professor :: Professor
-  } deriving Show
+<pre><code> Address      Purpose
+ ──────────   ────────────────────────────────────
+ 0..7         Header block (loaded by a single vload in the prelude)
+ 8            Address temp for InpIdx / Forest / Header
+ 9            Address temp for InpVal
+ 10..17       Address temp vector (for gather base+index computation)
+ 18..         SSA value storage (1 slot per I32, w slots per Vec)</code></pre>
 
-title :: Lens Class String
-title = Lens 
-  { view = _title
-  , set  = \ ttl cls -&gt; cls {_title = ttl} 
-  }
+<p>Loop induction variables don&rsquo;t get persistent slots &mdash; they are materialized
+as constants on each unrolled iteration. Header-load IDs are already mapped to
+header block slots 0&ndash;6.</p>
 
-professor :: Lens Class Professor
-professor = Lens 
-  { view = _professor
-  , set  = \ prof cls -&gt; cls {_professor = prof} 
-  }
+<h3 id="header-prelude">Header Prelude</h3>
 
--- ========================================
--- Professor
+<p>The lowering emits a single <code>vload</code> that reads 8 words from memory
+address 0 into scratch slots <code>[0..7]</code>. This loads the entire header in one
+cycle. The IR&rsquo;s seven <code>RLoad LoadScalar Header</code> statements are then no-ops
+during lowering &mdash; the value for each is already in its scratch slot.</p>
 
-data Professor = Professor
-  { _name :: String
-  , _coffee :: CoffeeCup
-  , _chalk :: ChalkState
-  } deriving Show
+<h3 id="constants">Constants and Broadcasts</h3>
 
-name :: Lens Professor String
-name = Lens 
-  { view = _name
-  , set  = \ nm prof -&gt; prof {_name = nm} 
-  }
+<p>Three caches avoid redundant materialization:</p>
 
-coffee :: Lens Professor CoffeeCup
-coffee = Lens 
-  { view = _coffee
-  , set  = \ cof prof -&gt; prof {_coffee = cof} 
-  }
+<table>
+<tr><th>Cache</th><th>Key</th><th>Instruction Emitted</th></tr>
+<tr><td><code>lsConstS</code></td><td><code>Word32</code></td><td><code>const dst val</code> (Load engine)</td></tr>
+<tr><td><code>lsConstV</code></td><td><code>Word32</code></td><td><code>vbroadcast dst src</code> (VALU engine)</td></tr>
+<tr><td><code>lsBcast</code></td><td>Scalar scratch</td><td><code>vbroadcast dst src</code> (VALU engine)</td></tr>
+</table>
 
-chalk :: Lens Professor ChalkState
-chalk = Lens 
-  { view = _chalk
-  , set  = \ clk prof -&gt; prof {_chalk = clk} }
+<p><code>getConstS c</code> materializes a scalar constant once and caches the scratch
+address. <code>getConstV c</code> calls <code>getConstS</code> then broadcasts. <code>getBroadcast s</code>
+broadcasts an existing scalar scratch to a vector. All three check their cache
+first and emit nothing on a hit. When a vector operation has a scalar operand
+(e.g., a <code>Const</code> in the IR), the lowering calls <code>exprVector</code> which
+automatically broadcasts it.</p>
 
--- ========================================
--- CoffeeCup
+<h3 id="sv-dispatch">Scalar vs. Vector Dispatch</h3>
 
-data CoffeeCup = CoffeeCup
-  { _capacity :: Double -- in liters
-  , _quantity :: Double -- in liters.
-  } deriving Show
+<p><code>lowerLet</code> switches on the <em>type</em> of the let-binding:</p>
 
-capacity :: Lens CoffeeCup Double
-capacity = Lens 
-  { view = _capacity
-  , set = (\ cap cof -&gt; cof {_capacity = cap}) 
-  }
+<table>
+<tr><th>IR Type</th><th><code>RBin op</code></th><th><code>RSelect</code></th><th><code>RLoad</code></th></tr>
+<tr><td><code>I32</code></td><td><code>Alu op</code> (ALU)</td><td><code>Select</code> (Flow)</td><td><code>Load</code> / <code>load</code> (Load)</td></tr>
+<tr><td><code>Vec _ _</code></td><td><code>VAlu op</code> (VALU)</td><td><code>VSelect</code> (Flow)</td><td><code>VLoad</code> / <code>load_offset</code> (Load)</td></tr>
+</table>
 
-quantity :: Lens CoffeeCup Double
-quantity = Lens 
-  { view = _quantity
-  , set = (\ quant cof -&gt; cof {_quantity = quant}) 
-  }
+<p>For vectors, <code>moReads</code>/<code>moWrites</code> lists span <code>w</code> consecutive addresses.
+For scalars, they are single-element lists.</p>
 
--- ========================================
--- ChackState
+<h3 id="address-comp">Address Computation and Caching</h3>
 
-data ChalkState = Whole | Broken
-  deriving Show
+<p>Memory accesses go through <code>computeAddr</code>, which computes <code>base_ptr + offset</code>.
+The function <code>basePtr</code> maps each <code>Buffer</code> to its base scratch address:
+<code>Header &rarr; const 0</code>, <code>Forest &rarr; hdrBase+4</code>, <code>InpIdx &rarr; hdrBase+5</code>,
+<code>InpVal &rarr; hdrBase+6</code>. These are the pointer words from the header.</p>
 
--- ========================================</code></pre>
-<p>There is a regrettable amount of boiler-plate in this code,
-but it does enable reasonably elegant solutions to the problems
-posed earlier.</p>
-<pre><code>sip :: Class -&gt; Class
-sip = over (professor &lt;.&gt; coffee &lt;.&gt; quantity)
-    $ \q -&gt; 0 `max` q-0.001
+<p>An optimization: if the same buffer was just accessed at the same static offset,
+the address ALU add is skipped and the cached address temp is reused. This
+saves an ALU slot when the same address is used for a load and its subsequent
+store (common: <code>InpIdx[i]</code> is loaded and stored in every iteration).</p>
 
-dropChalk :: Class -&gt; Class
-dropChalk = set (professor &lt;.&gt; chalk) Broken
+<h3 id="gather-loads">Gather Loads</h3>
 
-refill :: Class -&gt; Class
-refill = over (professor &lt;.&gt; coffee) fill where
-  fill cup = set quantity (view capacity cup) cup</code></pre>
-<p>Yet, if we were really honest with ourselves, we might have a twinge of
-conscience. Our definition of <code>over</code>, which we use twice here, uses both of its
-constituent functions. It uses the lens’s <code>get</code> function for the first time to
-excavate a value of type <code>a</code> that may be buried quite deeply within a value of
-type <code>s</code>. Having excavated value, it applies the function <code>f</code> to it, only to
-have to turn around and dig the same hole again via an application of the lens’s
-<code>set</code> to bury it. Moreover, we really can’t do any better, if <code>view</code> and <code>set</code>
-are our only tools. So with a heavy heart, we contemplate adding a new <code>over</code>
-field to our <code>Lens</code> type:</p>
-<pre><code>data Lens s a = Lens 
-  { view :: s -&gt; a 
-  , set :: a -&gt; s -&gt; s
-  , over :: (a -&gt; a) -&gt; s -&gt; s 
-  }</code></pre>
-<p>And now, having thought of another access pattern (modification), we might
-wonder what else we’ve missed. How about a modification that might fail, i.e.,
-<code>overMaybe :: Len s a -&gt; (a -&gt; Maybe a) -&gt; s -&gt; Maybe s</code>? Or perhaps a
-modification that takes place in an context with effects, e.g.,
-<code>overIO :: Lens s a -&gt; (a -&gt; IO a) -&gt; (s -&gt; IO s)</code>? Suddenly, we’re looking at a lot more
-complexity, and with a shaken confidence in our belief that we’ve
-captured all of the access patterns we should care about.</p>
-<pre><code>data Lens s a = Lens 
-  { view :: s -&gt; a 
-  , set :: a -&gt; s -&gt; s
-  , over :: (a -&gt; a) -&gt; s -&gt; s 
-  , overMaybe :: (a -&gt; Maybe a) -&gt; s -&gt; Maybe s 
-  , overIO :: (a -&gt; IO a) -&gt; s -&gt; IO s 
-}</code></pre>
-<p>Of course, we can simplify the problem by generalizing the last couple
-of components:</p>
-<pre><code>data Lens s a = Lens 
-  { view :: s -&gt; a 
-  , set :: a -&gt; s -&gt; s 
-  , over :: (a -&gt; a) -&gt; s -&gt; s 
-  , overM :: Monad m =&gt; (a -&gt; m a) -&gt; s -&gt; m s 
-  }</code></pre>
-<p>This makes us happier, because there’s less to do, and less of a sense that we
-might have missed something. Unfortunately, we can’t actually do this, because
-the type of <code>overM</code> involves the type variable <code>m</code> which is out of scope, and so
-this won’t type check. There is subtlety here. Haskell, as defined, allows
-polymorphic types, but polymorphic type definitions require that free variables
-on the right hand side of a definition occur on the left hand side, which is
-exactly what <code>m</code> doesn’t do.</p>
-<p>And why does this limitation exist? <strong>Haskell, as defined, allows for polymorphic
-expressions, but not for polymorphic values. The full type of any <em>value</em> has to
-has to be fully grounded.</strong></p>
-<p>But we want <code>overM</code>, <em>as a value</em> to retain its polymorphism. It would seem we’re
-at an impasse. But programming language research continued after Haskell was first
-defined, and efficient ways of implementing polymorphic values because feasible.
-There is a language extension <code>RankNTypes</code> that enables this. Briefly, <code>RankNTypes</code>
-enables the introduction of <em>explicit</em> uses of <code>forall</code> quantification over type
-variables. With the <code>RankNTypes</code> extension enabled, the limitation that all values
-must have fully grounded types is still present, but a fully grounded type can now
-include an explicitly quantified variable, leaving us with the curious result that
-a value can be simultaneously polymorphic and of fully grounded type. It’s a bit
-head spinning, but let’s plow on…</p>
-<pre><code>data Lens s a = Lens 
-  { view :: s -&gt; a 
-  , set :: a -&gt; s -&gt; s 
-  , over :: (a -&gt; a) -&gt; s -&gt; s 
-  , overM :: forall m. Monad m =&gt; (a -&gt; m a) -&gt; s -&gt; m s 
-  }</code></pre>
-<p>Note that we’ll need to enable <code>RankNTypes</code>, either via an explicit directive</p>
-<pre><code>{-# LANGUAGE RankNTypes #-}</code></pre>
-<p>or by using a language version (<code>GHC2021</code> or <code>GHC2024</code>) that enables this extension
-automatically. The later is an indication that the <code>RankNTypes</code> extension has been
-in use a long time, has been stable, and has been found to be of fairly general use.</p>
-<p>Indeed, the “trick” that allowed for the consistent use of reference variable in the
-<code>ST</code> monad also relied on <code>RankNTypes</code>.</p>
-<p>It should be clear that we can define <code>over</code> in terms of <code>overM</code> by performing
-our calculation in the <code>Identity</code> monad, and then escaping from it.</p>
-<pre><code>over :: Lens s a -&gt; (a -&gt; a) -&gt; s -&gt; s
-over lsa f s = runIdentity (overM lsa (pure . f) s)</code></pre>
-<p>and this definition begs to be reworked by our usual trick of introducing a composition
-and <mjx-container class="MathJax CtxtMenu_Attached_0" jax="CHTML" tabindex="0" ctxtmenu_counter="0" style="font-size: 101.6%; position: relative;"><mjx-math class="MJX-TEX" aria-hidden="true"><mjx-mi class="mjx-i"><mjx-c class="mjx-c1D702 TEX-I"></mjx-c></mjx-mi></mjx-math><mjx-assistive-mml unselectable="on" display="inline"><math xmlns="http://www.w3.org/1998/Math/MathML"><mi>η</mi></math></mjx-assistive-mml></mjx-container> reducing:</p>
-<pre><code>over isa f = runIdentity . overM lsa (pure . f)</code></pre>
-<p>Moreover, we realize that we can efficiently define <code>set</code> in terms of
-<code>over</code> by “modifying” via a constant function:</p>
-<pre><code>set :: Lens s a -&gt; a -&gt; s -&gt; s 
-set lens a = over lens (const a)</code></pre>
-<p>This leaves us with</p>
-<pre><code>data Lens s a = Lens
-  { view :: s -&gt; a 
-  , overM :: forall m. Monad m =&gt; (a -&gt; m a) -&gt; (s -&gt; m s)
-  }</code></pre>
-<p>Of course, we still have to implement <code>(&lt;.&gt;)</code>, which turns out to be
-surprisingly easy:</p>
-<pre><code>(&lt;.&gt;) :: Lens s t -&gt; Lens t u -&gt; Lens s u
-lst &lt;.&gt; ltu = Lens 
-  { view = view ltu . view lst
-  , overM = overM lst . overM ltu
-  }</code></pre>
-<p>and we have to figure out if we can implement <code>overM</code>. Let’s recall
-the definition of the <code>Class</code> type:</p>
-<pre><code>data Class = Class
-  { _title :: String
-  , _professor :: Professor
-  } </code></pre>
-<p>The <code>overM</code> member of the <code>professor</code> lens will have type</p>
-<pre><code>overM :: forall m. Monad m 
-      =&gt; (Professor -&gt; m Professor) -&gt; Class -&gt; m Class</code></pre>
-<p>So we start:</p>
-<pre><code>overM f cls = _</code></pre>
-<p>If we’re going to use <code>f</code>, we have to find a <code>Professor</code> to apply it to. The only
-available candidate (and it makes sense here) is the <code>_professor</code> field of <code>cls</code>:</p>
-<pre><code>overM f cls = _ (f (_professor cls))</code></pre>
-<p>which we might rewrite, according to our usual bias to introduce compositions, as</p>
-<pre><code>overM f cls = _ (f . _professor $ cls)</code></pre>
-<p>This expression has type <code>m Professor</code>. We need to produce a value of type
-<code>m Class</code>. How can we do this? A natural approach is via an <code>fmap</code>, and we
-know this is ok because <code>m</code> is a <code>Monad</code> and so a <code>Functor</code>.</p>
-<p>So</p>
-<pre><code>overM f cls = _ &lt;$&gt; (f . _professor $ cls)</code></pre>
-<p>and we’ve reduced our problem to finding an expression of type <code>Professor -&gt; Class</code>.
-This is easy enough, we’ll modify our <code>cls</code> value to have the desired <code>_professor</code></p>
-<pre><code>overM f cls = (\prof -&gt; cls { _professor = prof} ) 
-                &lt;$&gt; (f . _professor $ cls)</code></pre>
-<p>Our <em>new</em>, <em>improved</em> lens definition comes with significant tradeoffs. On
-the debit side, the boilerplate in defining lenses is indisputably uglier,
-cf.</p>
-<pre><code>professor :: Lens Class Professor
-professor = Lens 
-  { view = _professor
-  , overM = \ f cls -&gt; (\p -&gt; cls { _professor = p})
-                          &lt;$&gt; (f . _professor $ cls)
-  }</code></pre>
-<p>This is not the sort of boilerplate that we’d be happy about having to write
-a lot of, but let’s set that aside for now, as we’re not done pulling rabbits
-out of our hat.</p>
-<p>On the credit side, our lens have considerably more utility, allowing us to
-work with monadically wrapped data, and we do this all the time in Haskell.</p>
-<div class="exercise">
-<p><strong>Exercise</strong> Defining the lenses <code>coffee</code> and <code>quantity</code>, and show that <code>sip</code>
-works as expected on a test case.</p>
-</div>
-<h2 id="van-laarhoven-lenses">van Laarhoven Lenses</h2>
-<p>We’ve gotten pretty far, but a striking observation due to Twan van
-Laarhoven is that we can go further still, and that it is productive to
-do so. First off, let’s look at that definition of <code>overM</code>:</p>
-<pre><code>overM = \ f cls -&gt; (\p -&gt; cls { _professor = p})
-                     &lt;$&gt; (f . _professor $ cls)</code></pre>
-<p>We’re only using <code>fmap</code> here, and none of the specific operations that
-<code>Monad</code> brings to the party. Thus, there’s no obvious reason not to
-generalize this all a bit further, replacing <code>Monad</code> with <code>Functor</code>, and
-renaming <code>overM</code> to be <code>overF</code>.</p>
-<p>So here is Twan’s insidious question: We’ve observed that we can define <code>over</code>
-from <code>overM</code> (and the same argument goes through for the more general <code>overF</code>)
-by cleverly using the <code>Identity</code> type as our functor, and we can derive <code>set</code>
-from <code>over</code> by using the <code>const</code> function. Can we somehow derive <code>view</code> as well,
-by somehow choosing the right <code>Functor</code>?</p>
-<p>If we could, it would have to be a peculiar type constructor, because it will have to
-carry a value of type <code>a</code> out of <code>m s</code>, even though <code>a</code> doesn’t appear in <code>m s</code>.
-But we can choose the right type constructor, and it’s <code>Const</code>,
-which is defined in <code>Control.Applicative</code>:</p>
-<pre><code>data Const a b = Const { getConst :: a } 
+<p><code>lowerLoadVecGather</code> handles the forest load after vectorization. The index
+is a vector of <code>w</code> data-dependent offsets:</p>
 
-instance Functor (Const a) where 
-  fmap f (Const a) = Const a</code></pre>
-<p>This is an odd type, indeed, with a dependence on a type which is
-ignored, and an <code>fmap</code> function that is effectively a type-casting
-version of the identity function. Still, it turns out to be exactly what
-we need. First, we’ll reduce the definition of <code>Lens</code> to the type of
-<code>overF</code>:</p>
-<pre><code>type Lens s a = forall f . Functor f =&gt; (a -&gt; f a) -&gt; s -&gt; f s</code></pre>
-<p>This code change requires a minor adjustment to</p>
-<pre><code>over :: Lens s a -&gt; (a -&gt; a) -&gt; s -&gt; s
-over lens f = runIdentity . lens (pure . f)</code></pre>
-<p>as the <code>Lens</code> now is its <code>overF</code> function, which doesn’t require
-unpacking any more.</p>
-<p>And we can now define <code>view</code>:</p>
-<pre><code>view :: Lens s a -&gt; s -&gt; a 
-view lsa s = getConst $ lens (a -&gt; Const a) s</code></pre>
-<p>or, after a brief rap on the knuckles by the Code Transformation Fairy:</p>
-<pre><code>view lsa = getConst . lsa Const</code></pre>
-<p>We also need to sort out our definition of <code>&lt;.&gt;</code>, but doing so results
-in a bit of a surprise – composition of lenses (which are now just
-functions from Kleisli arrows to Kleisli arrows) reduces to composition
-of the lenses <em>as</em> functions, so <code>&lt;.&gt;</code> becomes dispensable. We can now
-implement lenses with somewhat less, and somewhat less annoying boilerplate,
-e.g.,</p>
-<pre><code>title :: Lens Class String
-title f cls = (\s -&gt; cls { _title = s }) 
-               &lt;$&gt; (f . _title $ cls)</code></pre>
-<p>and implement <code>sip</code> as</p>
-<pre><code>sip = over (professor . coffee . quantity)
-           $ \q -&gt; max 0 (q - 0.001) `</code></pre>
-<p>Pretty slick. But we’re not done.</p>
-<h2 id="practicalities">Practicalities</h2>
-<p>If we’re going to get serious about lenses, it’s time to stop this pedagogical
-rolling of our own lenses, and to use a lens library that has seen some serious,
-sustained attention. While there are other lens libraries, and legitimate
-reasons to use them, we’re going to use Edward Kmett’s <code>lens</code> package. Please
-understand that this is not small, and will result in surprising long initial
-builds as <code>lens</code> and its dependencies are downloaded and built.</p>
-<p>Best to resign yourself now.</p>
-<p>But let’s see what’s gained, by looking at a relatively lightweight
-adaptation of our code to use Kmett’s <code>lens</code> library:</p>
-<pre><code>{-# LANGUAGE TemplateHaskell #-}
+<ol>
+<li>Broadcast the forest base pointer to a vector.</li>
+<li>VALU-add the index vector and base vector, producing a vector of absolute
+addresses.</li>
+<li>Issue <code>w</code> individual <code>load_offset</code> instructions, one per lane.</li>
+</ol>
 
-module Main where
+<p>Each <code>load_offset</code> reads from a different element of the address vector. The
+memory metadata is <code>Unknown</code> because gather addresses are data-dependent.</p>
 
-import Control.Lens
+<h3 id="unrolling">Loop Unrolling</h3>
 
-data Class = Class
-  { _title :: String
-  , _professor :: Professor
-  }
+<p>The lowering fully unrolls every loop by iterating
+<code>[start, start+step .. end-1]</code> and emitting the body for each iteration value.
+This is valid because loop bounds are compile-time constants. Before each
+iteration, if the IV is used in the body, a <code>const</code> load materializes the
+current iteration value as a scalar scratch.</p>
 
-data Professor = Professor
-  { _name :: String
-  , _coffee :: CoffeeCup
-  , _chalk :: ChalkState
-  }
+<p>After vectorization, the inner loop has step <code>w=8</code>. For <code>batchSize=256</code>,
+this means 32 unrolled iterations (down from 256 scalar iterations). Each
+iteration emits vector ops that process 8 elements, so the total work is
+the same but uses roughly 8x fewer instructions.</p>
 
-data CoffeeCup = CoffeeCup
-  { _capacity :: Double -- liter
-  , _quantity :: Double -- liters
-  }
+<h2 id="bundling">Bundling (<code>Bundle.hs</code>)</h2>
 
-data ChalkState = Whole | Broken
+<p>The bundler takes the flat <code>[MachineOp]</code> list and packs it into VLIW bundles,
+where each bundle represents one cycle on the simulator.</p>
 
-makeLenses ''Class
-makeLenses ''Professor
-makeLenses ''CoffeeCup
+<h3 id="bundling-algo">Algorithm</h3>
 
-sip :: Class -&gt; Class
-sip = over (professor . coffee . quantity) $ subtract 0.001
+<p>The bundler is a <strong>greedy in-order packetizer</strong>: it scans ops front-to-back
+and tries to add each op to the current bundle. If the op doesn&rsquo;t fit, the
+current bundle is flushed and a new one is started. <strong>Ops are never
+reordered.</strong></p>
 
-start :: Class
-start = Class { _title = "cmsc-22311", _professor = prof } where
-  prof = Professor 
-    { _name = "Stuart Kurtz"
-    , _coffee = cup
-    , _chalk = Broken 
-    }
-  -- is cup half full, or half empty?
-  cup = CoffeeCup { _capacity = 0.5, _quantity = 0.25 } 
+<p>This is not optimal (a scheduler that considers latencies could do better),
+but it is simple, correct, and still achieves significant packing because the
+lowering emits operations in a natural order where adjacent ops often target
+different engines.</p>
 
-main :: IO ()
-main = do
-  let end = sip start
-  print $ view (professor . coffee . quantity) end</code></pre>
-<p>The directive <code>{-# LANGUAGE TemplateHaskell #-}</code>, enables the use of Template
-Haskell within this file. Template Haskell is a meta-programming system for
-Haskell, i.e., it enables us to use Haskell to write Haskell, and incorporate
-the resulting <em>splices</em> our source files.</p>
-<p>The benefit of doing so is apparent from the <code>makeLenses</code> lines, which are
-splices that build full sets of lenses for our datatypes. Haskell can’t do that,
-but Template Haskell, with its ability to introspect over class definitions,
-can. And we don’t need to know how it works, only how to create the splices we need.</p>
-<p>Note too that the convention we’ve been using of naming fields within
-records with initial underscores is enforced here—the splice function
-<code>makeLenses</code> depends on it.</p>
-<p>Kmett’s library is huge, and part of that is that he defines a
-large variety of infix operators that work with lenses, e.g., <code>(^.)</code> for
-<code>flip view</code>, <code>(.~)</code> for <code>set</code>, and <code>(%~)</code> for <code>over</code>. Thus, e.g., Kmett
-would rewrite a few lines of our lines:</p>
-<pre><code>sip :: Class -&gt; Class 
-sip = professor . coffee . quantity 
-        %~ \q -&gt; max 0 (q - 0.001) 
-        
-main :: IO ()
-main = do 
-  let end = sip start 
-  print $ end ^. professor 
-               . coffee 
-               . quantity</code></pre>
-<p>Note especially the last expression within the <code>do</code> of the definition of <code>main</code>.
-There’s a pun here between <code>(.)</code> as used by functional programmers to mean
-function composition, and <code>.</code> as used in procedural languages as a field
-selector for a product type, like C’s <code>struct</code>. Kmett is clearly smitten by this
-pun, and he looks for opportunities to develop it further. Whether or not it is
-even remotely a good idea to organize a library so as to make functional code
-look like procedural code, and for the analogy suggested thereby to be a
-faithful one, is a question over which people of good faith can disagree; but
-clearly is one that adds to the overall controversy around lenses within the
-Haskell community.</p>
-<p>And still, Kmett isn’t really done… There are versions of the
-Kmett’s operators that act within a state monad, which is really the
-only sensible way to organize a simulation. To that end, we’ll define a
-simulation as follows:</p>
-<pre><code>sim :: StateT Class IO ()
-sim = do
-  professor . coffee . quantity %= \q -&gt; max 0 (q - 0.001)
-  professor . chalk .= Broken
+<h3 id="bundling-legality">Legality Checks</h3>
 
-  q &lt;- use $ professor . coffee . quantity
-  liftIO . putStrLn $ unwords ["quantity:", show q]
-  c &lt;- use $ professor . chalk
-  liftIO . putStrLn $ unwords ["chalk state:", show c]
+<p><code>canPack</code> checks four conditions. All must hold for the op to enter the
+current bundle:</p>
 
-main :: IO ()
-main = evalStateT sim start   </code></pre>
-<p>In this version of the code, we’ve dispensed with <code>sip</code>, and instead
-code its effect directly in <code>sim</code>. The first line uses the <code>(%=)</code>
-operator to modify the underlying state value. The second line uses
-<code>(.=)</code> to effect an assignment, in much the same way. The third and
-fifth lines use the <code>use</code> function to view a value (Haskell doesn’t
-have unary operators, so Kmett can’t define one), and the fourth and
-sixth do IO.</p>
-<p>This code looks procedural, with the outermost <code>professor</code> lens
-functioning in analogy to a local variable with that name in procedural
-code.</p>
-<h2 id="s-t-a-bed-semantic-editor-combinators">s t a b’ed: Semantic Editor Combinators</h2>
-<p>I’ve made a few remarks about types. In Kmett’s lens library, the
-lenses we’ve been dealing with are actually simple lenses, which can be
-declared as <code>Lens' s a</code>. The actual
-definition of <code>Lens</code> involves four(!) parameters, and has the form:</p>
-<pre><code>type Lens s t a b =
-  forall f . (Functor f) =&gt; (a -&gt; f b) -&gt; s -&gt; f t</code></pre>
-<p>The point to this is that we may want to use setters or mutators that
-change the type of the outer structure, cf.,</p>
-<pre><code>data Box a = Box { _goody :: a }
- deriving Show
+<p><strong>1. Slot capacity.</strong> Each engine has a maximum: ALU &le; 12, VALU &le; 6,
+LOAD &le; 2, STORE &le; 2, FLOW &le; 1.</p>
 
-makeLenses ''Box `</code></pre>
-<p>Now</p>
-<pre class="interactive"><code>&gt; let b = Box 1 :: Box Int
-&gt; set goody b "one" 
-Box {_goody = "one"}</code></pre>
-<p>What happened here is perfectly natural – we set the value of a hole
-to be a different type than it previously contained, with the effect of
-producing a mutated value with a different type <code>Box String</code> than its
-input type.</p>
-<h2 id="concluding-remarks">Concluding Remarks</h2>
-<p>This lecture has barely scratched surface of lenses. In particular, other data
-structures (tuples, lists, maps, set) can have lenses, and lenses are a part of
-a large and growing ecosystem of <em>Optics</em> which provide us new ways to see and
-manipulate data. This lecture isn’t really intended to teach you Optics so much
-as to let you know that they’re out there, and may worth learning depending on
-your programming requirements and style.</p>
-<p>Remember our opening quote? <em>The wand chooses wizard.</em> Perhaps this is so. But
-the wizard has a lot of work to do learning the various incantations that,
-together with the wand, accomplish the magic the wizard intends. So it is
-with Optics.</p>
-<h2 id="references">References</h2>
-<p>I recommend Chris Penner’s “Optics by Example,” LeanPub.com, as a <em>practical</em>
-introduction to Optics in general.</p>
+<p><strong>2. No RAW hazard.</strong> The op&rsquo;s reads must not overlap with addresses written
+by earlier ops in this bundle. Even though the simulator executes all ops
+in a bundle atomically, the compiler emits ops in program order and expects
+sequential semantics.</p>
+
+<p><strong>3. No WAW hazard.</strong> No two writes to the same scratch address in one cycle.</p>
+
+<p><strong>4. No memory hazard.</strong> If the op accesses a memory region that already has
+a store in this bundle, the address ranges must not overlap.</p>
+
+<h3 id="bundling-practice">Packing in Practice</h3>
+
+<p>For a batch size of 16 with 1 round, the test suite shows: scalar pipeline
+produces <strong>386 bundles</strong> (nearly one op per cycle), while the vectorized
+pipeline produces <strong>77 bundles</strong>. The 5x reduction comes from two sources:
+vectorization reduces instruction count by ~8x, and the bundler packs
+multiple independent ops into each cycle (an ALU address computation and a
+LOAD can share a cycle, two LOADs can share a cycle, a VALU and a LOAD
+<code>const</code> can share a cycle, and so on).</p>
+
+<h2 id="rendering">Rendering (<code>PythonInterop.hs</code>)</h2>
+
+<p><code>renderProgramPayload</code> produces a Python dict literal:</p>
+
+<pre><code>{"rounds":3,"batch_size":256,"program":[{...},{...},...]}</code></pre>
+
+<p>Each bundle is a dict with engine keys (<code>"alu"</code>, <code>"valu"</code>, <code>"load"</code>,
+<code>"store"</code>, <code>"flow"</code>) mapping to lists of tuples. The rendering functions
+pattern-match on the typed ISA slot constructors and produce the correct
+string. Because the slots are typed, the renderer is total over all ISA
+constructors and the output format is guaranteed to match what the simulator&rsquo;s
+parser expects.</p>
+
+<h2 id="worked-example">Worked Example: One Batch Element Through the Pipeline</h2>
+
+<p>To make the pipeline concrete, let us trace the transformation of one batch
+element through every stage.</p>
+
+<h3>Stage 1: Scalar IR</h3>
+
+<p>The inner loop body for element <code>i</code> (all types <code>I32</code>):</p>
+
+<pre><code>Let %12 I32 (RLoad LoadScalar InpIdx (Var %10))      -- idx = InpIdx[i]
+Let %13 I32 (RLoad LoadScalar InpVal (Var %10))      -- val = InpVal[i]
+Let %14 I32 (RLoad LoadScalar Forest (Var %12))      -- node = Forest[idx]
+Let %15 I32 (RBin Xor (Var %13) (Var %14))           -- val ^= node
+   ... 6 hash stages, each 3 Lets ...
+Let %33 I32 (RBin Mod (Var %32) (Const 2))           -- mod2 = hash % 2
+Let %34 I32 (RBin Eq_ (Var %33) (Const 0))           -- even?
+Let %35 I32 (RSelect (Var %34) (Const 1) (Const 2))  -- add = even?1:2
+Let %36 I32 (RBin Mul (Var %12) (Const 2))           -- idx*2
+Let %37 I32 (RBin Add (Var %36) (Var %35))           -- nextIdx
+Let %38 I32 (RBin Lt (Var %37) (Var %1))             -- &lt; nNodes?
+Let %39 I32 (RSelect (Var %38) (Var %37) (Const 0))  -- wrap to 0
+Store StoreScalar InpIdx (Var %10) (Var %39)
+Store StoreScalar InpVal (Var %10) (Var %32)</code></pre>
+
+<h3>Stage 3: After Vectorize (step becomes 8)</h3>
+
+<p>The vectorizer checks: <code>iv</code> (%10) is used only as an index into <code>InpIdx</code> and
+<code>InpVal</code>. Legality passes. Types are promoted:</p>
+
+<pre><code>Let %12 (Vec 8 I32) (RLoad (LoadContigVec 8) InpIdx (Var %10))
+Let %13 (Vec 8 I32) (RLoad (LoadContigVec 8) InpVal (Var %10))
+Let %14 (Vec 8 I32) (RLoad (LoadGatherVec 8) Forest (Var %12))
+Let %15 (Vec 8 I32) (RBin Xor (Var %13) (Var %14))
+   ... all hash stages now Vec 8 I32 ...
+Store (StoreContigVec 8) InpIdx (Var %10) (Var %39)
+Store (StoreContigVec 8) InpVal (Var %10) (Var %32)</code></pre>
+
+<p>The <code>InpIdx</code>/<code>InpVal</code> loads became contiguous vector loads. The forest load
+became a gather (its index is now a vector). All arithmetic was promoted
+to <code>Vec 8 I32</code>. The <code>(Const 2)</code> operands remain <code>I32</code> &mdash; the lowering
+will broadcast them.</p>
+
+<h3>Stage 5: After Lowering (one unrolled iteration at i=0)</h3>
+
+<pre><code>MSlotAlu  (Alu Add addr=8 base=5 offset=const(0))  -- addr for InpIdx[0]
+MSlotLoad (VLoad dst=18 addr=8)                     -- InpIdx[0:8] &rarr; scratch 18..25
+MSlotAlu  (Alu Add addr=9 base=6 offset=const(0))  -- addr for InpVal[0]
+MSlotLoad (VLoad dst=26 addr=9)                     -- InpVal[0:8] &rarr; scratch 26..33
+MSlotValu (VAlu Add addrV=10 ixV=18 baseV=bcast(4)) -- gather addresses
+MSlotLoad (LoadOffset dst=34 base=10 lane=0)        -- Forest[idx[0]]
+...                                                  -- 8 lane loads total
+MSlotValu (VAlu Xor dst=42 src=26 src=34)           -- val ^= node
+... (6 hash stages, each ~3 VALU ops) ...
+MSlotStore (VStore addr=8 src=...)                   -- InpIdx[0:8] = wrapped
+MSlotStore (VStore addr=9 src=...)                   -- InpVal[0:8] = hashed</code></pre>
+
+<h3>Stage 6: After Bundling</h3>
+
+<p>The bundler packs independent ops into cycles: the address ALU + VLoad share
+a cycle (different engines), the 8 gather <code>LoadOffset</code>s span 4 cycles
+(2 loads/cycle), VALU hash ops pack up to 6 per cycle, and the two VStores
+fit in one cycle.</p>
+
+
+<h2 id="earlier-design">An Earlier, More Ambitious Design</h2>
+
+<p>The current compiler was preceded by a significantly more complex design &mdash;
+approximately 3,500 lines across 14 modules, compared to the current 1,400
+lines across 11. This earlier design attempted to build a general-purpose
+compiler infrastructure, and understanding <em>what</em> it tried to do and <em>why</em>
+those things are hard provides useful perspective on the tradeoffs inherent in
+compiler design.</p>
+
+<h3 id="old-ir">The Old IR: Region-SSA with Parametric Debugging</h3>
+
+<p>The old <code>FinalIR.hs</code> (258 lines) defined a richly-typed IR with deep
+support for memory effects, affine indexing, SIMD execution modes, and
+parametric debugging. Its core differences from the current design were:</p>
+
+<p><strong>Type parameter <code>k</code>.</strong> Every type in the IR &mdash; <code>Kernel k</code>, <code>Region k</code>,
+<code>Stmt k</code>, <code>Effect k</code> &mdash; was parameterized over a phantom type <code>k</code>
+representing debug key references. This made the entire IR a <code>Functor</code> over
+debug key representations, enabling the compiler to transform debug
+annotations independently of program logic. The cost was that every function
+touching the IR had to be polymorphic in <code>k</code>, and <code>Functor</code> instances had to
+be derived for every type.</p>
+
+<p><strong>A richer type system.</strong> The old IR had five types instead of two:
+<code>I32</code>, <code>Ptr</code>, <code>Vec Width Ty</code>, <code>Mask Width</code>, and <code>Mem MemSpace</code>.
+<code>Ptr</code> was a first-class address type distinct from <code>I32</code>, requiring separate
+pointer-arithmetic validation in the lowering. <code>Mask</code> was a dedicated predicate
+vector type for SIMD conditionals. <code>Mem MemSpace</code> was a phantom token type
+for memory effect sequencing.</p>
+
+<p><strong>Affine index algebra.</strong> Rather than plain <code>Expr</code> offsets, the old IR had a
+full affine expression language:</p>
+
+<pre><code>data Ix = IxConst Int | IxVar Id | IxLane | IxAdd Ix Ix | IxMul Int Ix
+data Index = IndexAff Ix | IndexVal Id
+data Addr = Addr { addrBase :: Id, addrIndex :: Index }</code></pre>
+
+<p><code>IxLane</code> represented the SIMD lane index. This algebra let the vectorizer reason
+about access patterns: <code>IxConst + IxMul 1 (IxVar iv)</code> is contiguous (vectorizable),
+<code>IxMul 2 (IxVar iv)</code> is strided (not vectorizable). The recursive lowering of
+this algebra to scratch-register operations took about 80 lines and handled
+constant folding at every node.</p>
+
+<p><strong>Memory tokens.</strong> Every load consumed a <code>Mem</code> token and produced both a
+value and a new <code>Mem</code> token. Every store consumed and produced a token. The
+<code>Let</code> node had <em>multiple</em> outputs <code>[(Id, Ty)]</code> to accommodate the value+token
+pair. The tokens had to be threaded linearly through control flow: in the
+presence of <code>If</code> nodes, the lowerer had to merge token chains from both
+branches.</p>
+
+<p><strong>Structured <code>If</code> with regions.</strong> The old IR had
+<code>If { ifCond, ifThen :: Region k, ifElse :: Region k, ifOuts }</code>.
+Each <code>Region</code> had <code>regionParams</code>, <code>regionStmts</code>, and <code>regionYield</code> &mdash;
+a structured form of phi-node that encoded which values flow into and out
+of the region. The <code>For</code> loop similarly had <code>forInits</code> (loop-carried values)
+and a region body with params and yields.</p>
+
+<p><strong>Carry parameters and reduction.</strong> The loop&rsquo;s region params/yields encoded
+loop-carried state. The vectorizer had to analyze each carry to determine
+whether it was (a) a memory token (pass through), (b) an associative reduction
+like <code>acc = acc + x[i]</code>, or (c) unsupported. <code>RReduce AluOp Id</code> was a
+dedicated IR node for horizontal SIMD reduction.</p>
+
+<h3 id="old-vectorizer">The Old Vectorizer: 998 Lines of Analysis</h3>
+
+<p>The old <code>BatchVectorizeFinalIR.hs</code> (998 lines) was a sophisticated pass.
+It classified values as <code>MUniform</code> (same across lanes), <code>MLaneBase</code>
+(contiguous with the induction variable), or <code>MVec</code> (fully vector).
+It performed backward stride analysis through the affine index algebra.
+It had a prepass that converted <code>If</code> nodes into <code>RSelect</code> operations
+(if-conversion), and another prepass that canonicalized address expressions
+to recover structured information from flattened pointer arithmetic.</p>
+
+<p>Compare this with the current vectorizer: 156 lines, a single legality check
+(<code>ivOnlyUsedAsInpIndex</code>), and a straightforward rewrite of load/store kinds.</p>
+
+<h3 id="old-lowering">The Old Lowering: 1,224 Lines</h3>
+
+<p>The old lowering had to handle <code>If</code> nodes (with conditional jumps and
+branch merging), <code>Region</code> with carry parameters, <code>Ptr</code> type validation,
+recursive affine index lowering, memory token validation, multi-output
+<code>Let</code> nodes, a parametric debug key mapping function, and
+<code>RReduce</code> expansion into vector accumulation + horizontal reduction + scalar
+combine. The current lowering is 478 lines.</p>
+
+<h3 id="why-hard">Why These Features Are Genuinely Hard</h3>
+
+<p>Each of the features that was removed represents a genuinely difficult
+compiler engineering problem:</p>
+
+<p><strong>Memory tokens</strong> enforce memory ordering through the type system. This is the
+approach used by MLIR&rsquo;s MemRef dialect and LLVM&rsquo;s memory SSA. The difficulty is
+<em>composability</em>: every load and store must consume and produce a token, and the
+tokens must be threaded linearly through control flow. In the presence of
+<code>If</code> nodes, the lowerer must merge token chains from both branches. A single
+dropped or duplicated token silently breaks memory ordering, causing loads to
+see stale values. The old compiler&rsquo;s multi-output <code>Let</code> and carry parameter
+threading through <code>Region</code> yields was the mechanism for this, and it required
+careful validation at every step.</p>
+
+<p><strong>Affine index algebra</strong> provides the representation for stride analysis, but
+the analysis itself must propagate stride information backward through arbitrary
+expression DAGs. Getting this wrong means the vectorizer might emit a contiguous
+<code>vload</code> for what is actually a strided or random access pattern &mdash; a silent
+correctness bug that produces wrong results but no crash.</p>
+
+<p><strong>If-conversion</strong> (converting branches to predicated <code>select</code> operations) is
+sound only when both branches are pure. The boundary is subtle: a branch that
+looks pure but contains a load through an aliased pointer is not safe to
+speculate. The interaction with memory tokens makes this especially delicate.</p>
+
+<p><strong>Carry analysis and reduction vectorization</strong> require recognizing that a
+loop-carried dependence like <code>acc = acc + x[i]</code> can be vectorized by
+accumulating partial sums in a vector and reducing at the end. The analysis
+must verify associativity of the reduction operator, correctly identify which
+operand is the carry vs. the contribution, and generate the reduction epilogue.
+Non-associative operations (subtraction, division) must be correctly rejected.</p>
+
+<p><strong>Parametric debug policies</strong> introduced a higher-kinded abstraction where the
+compiler was generic over the representation of debug keys. When a scalar loop
+became a vector loop, one debug key per iteration had to become <code>w</code> keys per
+vector iteration. Error handling had to flow through <code>Either String</code> at every
+policy callback, and the policy interacted with every IR transformation.</p>
+
+<h3 id="the-tradeoff">The Tradeoff</h3>
+
+<p>The fundamental design shift was from a <em>general-purpose region-SSA compiler</em>
+to a <em>domain-specific compiler for a known kernel shape</em>. The old compiler was
+built to handle arbitrary structured programs with unknown access patterns,
+dynamic loop bounds, conditional branches, and loop-carried dependences. The
+new compiler exploits the fact that the target kernel has a fixed structure:
+nested <code>For</code> loops over known buffers with known access patterns.</p>
+
+<p>The quantitative result is a 3.3x reduction in code size:</p>
+
+<table>
+<tr><th>Component</th><th>Old</th><th>New</th><th>Ratio</th></tr>
+<tr><td>IR definition</td><td>258 lines</td><td>144 lines</td><td>1.8x</td></tr>
+<tr><td>Lowering</td><td>1,224 lines</td><td>478 lines</td><td>2.6x</td></tr>
+<tr><td>Vectorization</td><td>998 lines</td><td>156 lines</td><td>6.4x</td></tr>
+<tr><td>Kernel builder</td><td>528 lines</td><td>62 lines</td><td>8.5x</td></tr>
+<tr><td><strong>Total</strong></td><td><strong>~3,500 lines / 14 modules</strong></td><td><strong>1,400 lines / 11 modules</strong></td><td><strong>2.5x</strong></td></tr>
+</table>
+
+<p>This is a classic tradeoff in compiler design. The old design was more powerful
+and extensible. The new design is simpler, more transparent, and produces
+correct output for the actual workload. Neither is wrong &mdash; they are
+answers to different questions. The old compiler asked, &ldquo;What would it take to
+handle <em>any</em> structured program on this machine?&rdquo; The new one asks, &ldquo;What is
+the clearest path from <em>this</em> program to efficient machine code?&rdquo;</p>
+
+<p>One way to view the relationship is that the features in the old compiler
+&mdash; memory tokens, affine indices, if-conversion, carry analysis &mdash;
+represent a <em>menu</em> of things a compiler might need. The insight behind the
+new design is that for this kernel, we only need a small subset of that menu,
+and by committing to that subset we gain enormous simplicity.</p>
+
+<h2 id="haskell-techniques">Haskell Techniques in the Compiler</h2>
+
+<p>The compiler is a good showcase for several Haskell idioms:</p>
+
+<p><strong>ADTs as the universal data structure.</strong> The IR, the machine model, the
+bundles &mdash; every intermediate form is an algebraic data type. Pattern matching
+provides exhaustive dispatch, and the compiler rejects ill-formed inputs at
+compile time rather than runtime.</p>
+
+<p><strong>Pure functions as passes.</strong> Every compiler pass is a pure function:
+<code>Function &rarr; Function</code>, <code>Function &rarr; [MachineOp]</code>,
+<code>[MachineOp] &rarr; [Bundle ()]</code>. This makes it trivial to test passes in
+isolation, compose them in any order, and reason about what each one does.</p>
+
+<p><strong>The <code>State</code> monad for accumulation.</strong> The IR builder and the lowering pass use
+<code>State</code> to thread a counter (for fresh IDs / scratch addresses) and an
+accumulator (for emitted statements / instructions). This is a disciplined
+use of mutable state: the mutation is bounded within a <code>runState</code> call, and the
+result is a pure value.</p>
+
+<p><strong>Higher-order functions for structure.</strong> <code>emitFor</code> takes a callback that
+builds the loop body. <code>emitHash</code> folds over a table of stage descriptors. The
+vectorizer&rsquo;s <code>goBlock</code> is a <code>foldl</code> over statements with an environment
+accumulator. These are not exotic techniques &mdash; they are the bread and
+butter of functional programming &mdash; but they lead to surprisingly concise
+compiler code.</p>
+
+<p><strong>Shared ADTs as a contract.</strong> The <code>AluOp</code> type, the slot ADTs, and the
+<code>Bundle</code> type from <code>ISA.hs</code> are shared between the compiler and the simulator.
+This is a compile-time guarantee that the compiler can only emit valid
+instructions. In a language without ADTs, this guarantee would require runtime
+validation or external schema checking.</p>
+
+<h2 id="summary">Summary</h2>
+
+<p>The compiler transforms a scalar kernel into vectorized, bundled machine code
+through six pure functional passes:</p>
+
+<ol>
+<li><strong>Kernel construction</strong> builds the scalar IR using a monadic builder.</li>
+<li><strong>Canonicalization</strong> folds constants.</li>
+<li><strong>Vectorization</strong> rewrites eligible loops to process 8 elements per iteration,
+with tail loops for non-divisible trip counts.</li>
+<li><strong>Peephole optimization</strong> fuses multiply-add pairs.</li>
+<li><strong>Lowering</strong> allocates scratch addresses, unrolls loops, and emits typed
+machine operations with hazard metadata.</li>
+<li><strong>Bundling</strong> packs operations into VLIW bundles, checking slot limits, register
+hazards, and memory conflicts.</li>
+</ol>
+
+<p>The whole pipeline composes into four lines of Haskell. Every intermediate
+form is an algebraic data type, every pass is a pure function, and the
+shared ISA library provides a compile-time contract between the compiler and
+the simulator. The result is a compiler that is small (1,400 lines), correct
+(all tests pass), and reasonably efficient (5x fewer cycles than the scalar
+baseline for the same computation).</p>
 
 </div>
 
 <div id="foot">
 <hr>
-    © 2009–2026 Stuart A. Kurtz<br>
-    Last modified: March  6, 2026
+    &copy; 2026 Arya Vohra<br>
+    Winter 2026
 </div>
 
-
-
-</body></html>
+</body>
+</html>
