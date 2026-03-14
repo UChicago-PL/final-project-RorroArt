@@ -1,258 +1,159 @@
-{-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-
--- | structured optimization IR + scheduled machine IR.
 module FinalIR
-  ( -- * KernelIR
-    Width(..)
-  , Exec(..)
-  , MemSpace(..)
+  ( Id(..)
   , Ty(..)
-  , Id(..)
-  , Ix(..)
-  , Index(..)
-  , Addr(..)
+  , vWidth
+  , Buffer(..)
+  , LoadKind(..)
+  , StoreKind(..)
+  , Expr(..)
   , Rhs(..)
-  , Effect(..)
   , Stmt(..)
-  , Region(..)
-  , Kernel(..)
-
-    -- * BundleIR
-  , Label(..)
-  , BProgram(..)
-  , BBlock(..)
-  , BBundle(..)
-  , BAluSlot(..)
-  , BValuSlot(..)
-  , BLoadSlot(..)
-  , BStoreSlot(..)
-  , BFlowSlot(..)
-  , BDebugSlot(..)
-
-    -- * Machine model
-  , Engine(..)
-  , MachineModel(..)
-
-    -- * types
-  , AluOp(..)
+  , Function(..)
+  , Build
+  , runBuild
+  , fresh
+  , emitLet
+  , emitStore
+  , emitFor
+  , emitForWithCarry
   ) where
 
+import Control.Monad.State.Strict (State, get, put, modify, runState)
 import Data.Word (Word32)
-import ISA (AluOp(..), Imm(..), Offset(..))
 
---------------------------------------------------------------------------------
--- KernelIR
---------------------------------------------------------------------------------
+import ISA (AluOp)
 
--- | SIMD width.
-newtype Width = Width Int
-  deriving (Show, Eq, Ord, Num)
+-- | SSA identifier.
+newtype Id = Id { unId :: Int }
+  deriving (Eq, Ord, Show)
 
--- | Execution mode for loops.
-data Exec
-  = ExecScalar
-  | ExecSimd !Width
-  deriving (Show, Eq, Ord)
-
--- | Optional memory space partitioning for effect ordering.
-data MemSpace
-  = MemAny
-  | MemSpace !Int
-  deriving (Show, Eq, Ord)
-
--- | KernelIR types.
+-- | Types. Vec w I32 corresponds to a scratch block of size w.
 data Ty
   = I32
-  | Ptr
-  | Vec !Width !Ty
-  | Mask !Width
-  | Mem !MemSpace
-  deriving (Show, Eq, Ord)
+  | Vec !Int !Ty
+  deriving (Eq, Ord, Show)
 
--- | SSA value ID.
-newtype Id = Id Int
-  deriving (Show, Eq, Ord, Enum, Num)
+vWidth :: Ty -> Maybe Int
+vWidth (Vec w _) = Just w
+vWidth _         = Nothing
 
--- | Affine index expressions.
-data Ix
-  = IxConst !Int
-  | IxVar !Id
-  | IxLane
-  | IxAdd !Ix !Ix
-  | IxMul !Int !Ix
-  deriving (Show, Eq, Ord)
+-- | Named disjoint memory regions.
+data Buffer
+  = Header
+  | Forest
+  | InpIdx
+  | InpVal
+  deriving (Eq, Ord, Show)
 
--- | Index can be affine (contiguous/vectorization-friendly) or arbitrary.
-data Index
-  = IndexAff !Ix
-  | IndexVal !Id
-  deriving (Show, Eq, Ord)
+-- | Memory load modes.
+data LoadKind
+  = LoadScalar
+  | LoadContigVec !Int
+  | LoadGatherVec !Int
+  deriving (Eq, Ord, Show)
 
--- | Address = base pointer + index.
-data Addr = Addr
-  { addrBase :: !Id
-  , addrIndex :: !Index
-  }
-  deriving (Show, Eq, Ord)
+-- | Memory store modes.
+data StoreKind
+  = StoreScalar
+  | StoreContigVec !Int
+  deriving (Eq, Ord, Show)
 
--- | Value-producing RHS operations.
+data Expr
+  = Var !Id
+  | Const !Word32
+  deriving (Eq, Ord, Show)
+
+-- | RHS for let-bindings.  Uses AluOp from ISA.
 data Rhs
   = RConst !Word32
-  | RBin !AluOp !Id !Id
-  | RReduce !AluOp !Id
-  | RSelect !Id !Id !Id
-  | RCoreId
-  | RBroadcast !Width !Id
-  | RMultiplyAdd !Id !Id !Id
-  | RLoad {memIn :: !Id, loadAddr :: !Addr}
-  | RStore {memIn :: !Id, storeAddr :: !Addr, storeVal :: !Id}
-  deriving (Show, Eq)
+  | RBin !AluOp !Expr !Expr
+  | RMulAdd !Expr !Expr !Expr
+  | RSelect !Expr !Expr !Expr
+  | RLoad !LoadKind !Buffer !Expr
+  | RVBroadcast !Int !Expr
+  | RReduce !AluOp !Expr    -- horizontal reduction of a vector to scalar
+  deriving (Eq, Ord, Show)
 
--- | Side effects that do not naturally fit as value-producing ops.
-data Effect k
-  = EPause
-  | ETraceWrite !Id
-  | EDebugCompare !Id !k
-  | EDebugCompareV !Id ![k]
-  | EDebugComment !String
-  | EHalt
-  deriving (Show, Eq, Ord, Functor)
+-- | Statements.
+data Stmt
+  = Let !Id !Ty !Rhs
+  | Store !StoreKind !Buffer !Expr !Expr
+  | For !Id !Int !Int !Int ![(Id, Expr)] ![Stmt]   -- iv, start, end, step, carries, body
+  deriving (Eq, Ord, Show)
 
--- | Region-SSA block.
-data Region k = Region
-  { regionParams :: ![(Id, Ty)]
-  , regionStmts :: ![Stmt k]
-  , regionYield :: ![Id]
+newtype Function = Function { fnBody :: [Stmt] }
+  deriving (Eq, Ord, Show)
+
+-- ---------------------------------------------------------------------------
+-- IR builder
+-- ---------------------------------------------------------------------------
+
+data BuildSt = BuildSt
+  { bsNext :: !Int
+  , bsRev  :: ![Stmt]
   }
-  deriving (Show, Eq, Functor)
 
--- | Structured statements.
-data Stmt k
-  = Let
-      { letOuts :: ![(Id, Ty)]
-      , letRhs :: !Rhs
-      }
-  | Eff !(Effect k)
-  | If
-      { ifCond :: !Id
-      , ifThen :: !(Region k)
-      , ifElse :: !(Region k)
-      , ifOuts :: ![(Id, Ty)]
-      }
-  | For
-      { forExec :: !Exec
-      , forLb :: !Int
-      , forUb :: !Id
-      , forStep :: !Int
-      , forInits :: ![Id]
-      , forBody :: !(Region k)
-      , forOuts :: ![(Id, Ty)]
-      }
-  deriving (Show, Eq, Functor)
+newtype Build a = Build { unBuild :: State BuildSt a }
 
--- | Top-level kernel.
-data Kernel k = Kernel
-  { kernelParams :: ![(Id, Ty)]
-  , kernelRetTys :: ![Ty]
-  , kernelBody :: !(Region k)
-  }
-  deriving (Show, Eq, Functor)
+instance Functor Build where
+  fmap f (Build m) = Build (fmap f m)
 
---------------------------------------------------------------------------------
--- BundleIR (scheduled IR)
---------------------------------------------------------------------------------
+instance Applicative Build where
+  pure x = Build (pure x)
+  Build f <*> Build x = Build (f <*> x)
 
--- | Labels for CFG / jumps.
-newtype Label = Label Int
-  deriving (Show, Eq, Ord, Enum, Num)
+instance Monad Build where
+  Build m >>= k = Build (m >>= unBuild . k)
 
--- | Scheduled program of cycle bundles.
-data BProgram k r = BProgram
-  { bEntry :: !Label
-  , bBlocks :: ![BBlock k r]
-  }
-  deriving (Show, Eq)
+runBuild :: Build a -> (a, [Stmt])
+runBuild (Build m) =
+  let st0 = BuildSt { bsNext = 0, bsRev = [] }
+      (a, st1) = runState m st0
+  in (a, reverse (bsRev st1))
 
-data BBlock k r = BBlock
-  { bLabel :: !Label
-  , bBundles :: ![BBundle k r]
-  }
-  deriving (Show, Eq)
+fresh :: Build Id
+fresh = Build $ do
+  st <- get
+  let i = bsNext st
+  put st { bsNext = i + 1 }
+  pure (Id i)
 
--- | One cycle worth of work across engines.
-data BBundle k r = BBundle
-  { bAluSlots :: ![BAluSlot r]
-  , bValuSlots :: ![BValuSlot r]
-  , bLoadSlots :: ![BLoadSlot r]
-  , bStoreSlots :: ![BStoreSlot r]
-  , bFlowSlots :: ![BFlowSlot r]
-  , bDebugSlots :: ![BDebugSlot r k]
-  }
-  deriving (Show, Eq)
+emitStmt :: Stmt -> Build ()
+emitStmt s = Build $ modify (\st -> st { bsRev = s : bsRev st })
 
-data BAluSlot r
-  = BAlu !AluOp !r !r !r
-  deriving (Show, Eq)
+emitLet :: Ty -> Rhs -> Build Expr
+emitLet ty rhs = do
+  x <- fresh
+  emitStmt (Let x ty rhs)
+  pure (Var x)
 
-data BValuSlot r
-  = BVBroadcast !r !r
-  | BMultiplyAdd !r !r !r !r
-  | BVAlu !AluOp !r !r !r
-  deriving (Show, Eq)
+emitStore :: StoreKind -> Buffer -> Expr -> Expr -> Build ()
+emitStore k buf ix v = emitStmt (Store k buf ix v)
 
-data BLoadSlot r
-  = BLoad !r !r
-  | BLoadOffset !r !r !Offset
-  | BVLoad !r !r
-  | BConst !r !Word32
-  deriving (Show, Eq)
+emitFor :: Int -> Int -> Int -> (Expr -> Build ()) -> Build ()
+emitFor start end step bodyFn = do
+  iv <- fresh
+  bodyStmts <- capture (bodyFn (Var iv))
+  emitStmt (For iv start end step [] bodyStmts)
 
-data BStoreSlot r
-  = BStore !r !r
-  | BVStore !r !r
-  deriving (Show, Eq)
+emitForWithCarry :: Int -> Int -> Int -> [(Ty, Expr)]
+                 -> (Expr -> [Expr] -> Build [Expr]) -> Build [Expr]
+emitForWithCarry start end step tyInits bodyFn = do
+  iv       <- fresh
+  carryIds <- mapM (const fresh) tyInits
+  let carryExprs = map Var carryIds
+      initPairs = zip carryIds (map snd tyInits)
+  bodyStmts <- capture $ do
+    _results <- bodyFn (Var iv) carryExprs
+    pure ()
+  emitStmt (For iv start end step initPairs bodyStmts)
+  pure (map Var carryIds)
 
--- | Control-flow slots reference labels; emission resolves labels to addresses.
-data BFlowSlot r
-  = BSelect !r !r !r !r
-  | BAddImm !r !r !Imm
-  | BVSelect !r !r !r !r
-  | BHalt
-  | BPause
-  | BTraceWrite !r
-  | BCondJump !r !Label
-  | BJump !Label
-  | BJumpIndirect !r
-  | BCoreId !r
-  deriving (Show, Eq)
-
-data BDebugSlot r k
-  = BCompare !r !k
-  | BVCompare !r ![k]
-  | BDebugIgnored !String
-  deriving (Show, Eq, Ord, Functor)
-
---------------------------------------------------------------------------------
--- Machine model
---------------------------------------------------------------------------------
-
-data Engine = EAlu | EValu | ELoad | EStore | EFlow | EDebug
-  deriving (Show, Eq, Ord)
-
-data MachineModel = MachineModel
-  { mmSimdWidth :: !Width
-  , mmCapAlu :: !Int
-  , mmCapValu :: !Int
-  , mmCapLoad :: !Int
-  , mmCapStore :: !Int
-  , mmCapFlow :: !Int
-  , mmCapDebug :: !Int
-  , mmLatAlu :: !Int
-  , mmLatValu :: !Int
-  , mmLatLoad :: !Int
-  , mmLatStore :: !Int
-  , mmLatFlow :: !Int
-  , mmLatDebug :: !Int
-  }
-  deriving (Show, Eq)
+capture :: Build a -> Build [Stmt]
+capture (Build m) = Build $ do
+  st0 <- get
+  put st0 { bsRev = [] }
+  _ <- m
+  st1 <- get
+  put st0 { bsNext = bsNext st1, bsRev = bsRev st0 }
+  pure (reverse (bsRev st1))

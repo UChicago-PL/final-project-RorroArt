@@ -75,18 +75,18 @@ executable compiler
     hs-source-dirs:   app/compiler
     main-is:          Main.hs
     other-modules:
-        BaselineKernel
-        PythonInterop
         FinalIR
-        FinalIRUtils
-        FinalIRBuilder
+        Machine
+        BaselineKernel
+        Canonicalize
+        DCE
+        Vectorize
+        Peephole
         FinalLowering
-        BaselineKernelFinalIR
-        BaselineKernelFinalLowering
-        BatchVectorizeFinalIR
-        BaselineDebugPolicy
-        BaselineKernelBatchingFinalIR
-        BatchvecProgramSuite
+        Schedule
+        Bundle
+        PythonInterop
+        TestSuite
     build-depends:
         final-project
         , containers >= 0.6 && < 0.7

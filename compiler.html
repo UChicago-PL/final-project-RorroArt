@@ -1,0 +1,651 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>Functional Programming in Haskell — Lenses</title>
+    <link rel="icon" href="favicon.ico" type="image/x-icon" />
+    <link rel="stylesheet" href="../../css/fph.css" type="text/css" media="all" />
+    
+    <script>
+        MathJax = {
+        tex: {
+            inlineMath: [['\\(','\\)']],
+            macros: {
+            limplies: "{\\rightarrow}",
+            ltrue:    "{\\top}",
+            lfalse:   "{\\bot}",
+            proves:   "{\\;\\vdash\\;}"
+            }
+        }
+        };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    
+</head>
+
+<body>
+<div id="header">
+    <h1>Functional Programming<br /> in Haskell</h1>
+    <h2>Winter 2026</h2>
+</div>
+
+<div id="navigation">
+    <a href="../../index.html">Table of Contents</a>
+</div>
+
+<div id="content">
+
+<h1>
+
+Chapter 26:
+
+Lenses
+</h1>
+
+<div class="pullquote">
+<p>The wand chooses the wizard, Mr. Potter. It’s not always clear why. But
+I think it is clear that we can expect great things from you. After all,
+He-Who-Must-Not-Be-Named did great things. Terrible! Yes. But great.</p>
+</div>
+<h2 id="introduction">Introduction</h2>
+<p>The idea of a lens is simple, it’s a type whose values somehow
+<em>provides access</em> to a constituent part of a complex value:</p>
+<p><img src="graphics/Lens.png" /></p>
+<p>The particular form of <code>Lens</code> here is local to this lecture, as subsequent
+events will lead us to deal with more complex types.</p>
+<p>The choice of the word <em>access</em> conveys a sort of pedagogical malice: on first
+exposure, access seems to be about <em>getters</em> and <em>setters</em>, but then <em>mutators</em>
+can’t be far behind, as are other access patterns.</p>
+<p>Having introduced the discussion of lenses via, “The idea of a lens is simple,”
+and knowing me, you might believe that there are things about lenses that aren’t
+simple. You’d be right. You might have heard something of lenses, and how
+“lens-heavy” Haskell code looks quite odd, even to experienced Haskell
+programmers. That’s right too. There is a division in the community as to
+whether lenses are worth the fuss, especially in as much as developing facility
+with lenses seems almost as daunting as developing facility with Haskell was in
+the first place. There’s a complicated story there, and we’ll reveal it in
+pieces as we go along.</p>
+<p>Let’s start by considering a small pedagogical example. We want to
+model a classroom, so we have a simple type definition:</p>
+<pre><code>data Class = Class
+  { title :: String
+  , professor :: Professor
+  }</code></pre>
+<p>The <code>Professor</code> type is also complex, which we’ll model in
+much the same spirit:</p>
+<pre><code>data Professor = Professor
+  { name :: String
+  , coffee :: CoffeeCup
+  , chalk :: ChalkState
+  }</code></pre>
+<p>We have complex types for <code>CoffeeCup</code> and <code>Chalk</code>:</p>
+<pre><code>data CoffeeCup = CoffeeCup
+  { capacity :: Double -- liters
+  , quantity :: Double -- liters
+  }
+
+data ChalkState = Whole | Broken</code></pre>
+<p>With these definitions in place, we’re asked to write a function that
+updates a <code>Class</code> value by having the prof take a sip from his coffee.
+At this point, a C programmer working with an analogous set of
+definitions might write this:</p>
+<pre><code>class.professor.coffee_cup.quantity -= 0.001; // 1 cc = 1 ml `</code></pre>
+<p>and then turn to us, saying, “OK, Mr. Fancy Pants Functional
+Programmer, let’s see you do better.” It does not go well.
+Our first attempt looks like this:</p>
+<pre><code>sip :: Class -&gt; Class
+sip cls =
+  let prof = professor cls
+      cup = coffee prof
+      q = quantity cup
+      q' = q-0.001
+      cup' = cup { capacity=q' }
+      prof' = prof { coffee=cup'}
+  in cls { professor = prof' }</code></pre>
+<p>Ouch! This is not functional programming’s finest hour, and functional
+programmers do not like it when procedural programmers laugh at them.
+This seems wildly cumbersome.</p>
+<p>And it’s annoying too, for two somewhat different reasons: (1) we realize that
+we’re going to have to do a lot of this, e.g., writing code that models the prof
+refilling his coffee cup, or dropping his chalk and breaking it; and (2) we have
+a sense that the code above involves unwrapping a data structure to get at an
+inner value, modifying that inner value, and then re-wrapping the modified inner
+value to get a modified outer value. If we could somehow abstract out single
+steps of doing that, we’d have a <em>compositional</em> approach to the problem.</p>
+<p>For example, consider</p>
+<pre><code>modQuantity :: (Double -&gt; Double) -&gt; CoffeeCup -&gt; CoffeeCup
+modQuantity f cup = cup { quantity = f (quantity cup) }</code></pre>
+<p>The <code>modQuantity</code> function lifts a function that modifies a quantity
+into a function that modifies a <code>CoffeeCup</code>. In effect, it is a
+component-specific analogue to <code>fmap</code>. Much as we can compose <code>fmap</code>
+with itself to lift a simple function into a context of nexted Functors,
+so to can we compose these “component-wise <code>fmap</code>s” into a function that
+reaches into the structure of a complex object, modifies a piece of it
+(non-destructively, of course) and returns the updated complex object.
+Thus,</p>
+<pre><code>modCoffee :: (CoffeeCup -&gt; CoffeeCup) -&gt; Professor -&gt; Professor
+modCoffee f prof = prof { coffee = f (coffee prof) }
+
+modProfessor :: (Professor -&gt; Professor) -&gt; Class -&gt; Class
+modProfessor f cls = cls { professor = f (professor cls) }
+
+sip' :: Class -&gt; Class
+sip'=
+  = modProfessor 
+  . modCoffee 
+  . modQuantity 
+  $ subtract 0.001</code></pre>
+<p>This isn’t code that’s going to make a procedural programmer jealous, but we
+have good reason to feel better about ourselves, as we have a clear path to
+implement the other mutators that are likely to be required: we provide atomic
+<code>fmap</code>-like functions (mutators) for each component of a product type, and then
+define mutators on complex types via compositions of the atomic mutators.</p>
+<p>There are some things to be pleased about here, and some things to be
+disappointed in. Haskell’s record syntax does a good job of providing us with
+<em>getters</em> for algebraic data types, but poor job with <em>setters</em> and <em>mutators</em>.
+Much of the code above consisted of writing mutators, all with essentially the
+same structure (produce a modified value by modifying one of its components),
+but this similarity isn’t something we can capture with Haskell itself. But once
+we write those tools for ourselves, they can be combined in useful ways to build
+up access functions that work on more complex data values.</p>
+<p>Indeed, we soon realize that our procedural programmer’s implementation
+of <code>sip</code> is a bit glib: if the prof tries to sip from an empty cup,
+they’re not going to end up with a negative amount of coffee. We can
+easily modify our code to reflect the complexities of a more correct
+computation:</p>
+<pre><code>sip' :: Class -&gt; Class
+sip'=
+  = modProfessor 
+  . modCoffee 
+  . modQuantity 
+  $ \ q -&gt; 0 `max` q - 0.001</code></pre>
+<p>This isn’t a terrible challenge for our procedural programer’s code,
+but the transformation is less trivial, because while C provides
+mutation operators associated with the standard binary operations, it
+doesn’t have a simple syntax for describing more complicated mutations.
+Thus,</p>
+<pre><code>class.professor.quantity = 
+  max(0.0,class.professor.quantity - 0.001);</code></pre>
+<p>Even though this is shorter than what we wrote, our C programming friend
+instinctively understands that there’s something not altogether
+wholesome in have to specify the sequence of field records twice, a
+defect that the Haskell code avoids. He’s not sure that what we’ve
+gained justifies our conceptual overheads, but at least, we’ve got him
+mumbling about compiler optimizations, and he’s stopped laughing.</p>
+<p>We don’t have the full power of lenses here, and we haven’t yet tried
+to build that power, but this initial investigation has provided some
+fruitful ideas, which will come back with surprising force later on.</p>
+<h2 id="naïve-lenses">Naïve Lenses</h2>
+<p>Our immediate goal is to develop a first class <code>Lens s a</code> type whose
+values provide access to a component of type <code>a</code> within a value of type
+<code>s</code>. To that end, we write:</p>
+<pre><code>data Lens s a = Lens 
+  { view :: s -&gt; a
+  , set :: a -&gt; s -&gt; s 
+  }</code></pre>
+<p>A common pattern is that we’ll have a <code>Lens s t</code>, a value that given access to a
+value of type <code>s</code>, gives us access to a constituent of type <code>t</code>, and a <code>Lens t u</code>, and we want to combine them to form a <code>Lens s u</code>. To do this, we’ll define
+<code>(&lt;.&gt;) :: Lens s t -&gt; Lens t u -&gt; Lens s u</code>, a <em>lens composition operator</em> which
+we can visualize as</p>
+<p><img src="graphics/composition.png" /></p>
+<p>and implement as</p>
+<pre><code>infix 9 &lt;.&gt;
+
+(&lt;.&gt;) :: Lens s t -&gt; Lens t u -&gt; Lens s u
+lst &lt;.&gt; ltu = Lens 
+  { view = view ltu . view lst
+  , set = \ u s -&gt; 
+      let t = view lst s
+          t' = set ltu u t
+      in set lst t' s
+  }</code></pre>
+<p>We’ll also provide a mutator <code>over</code> defined in terms of our lens:</p>
+<pre><code>over :: Lens s a -&gt; (a -&gt; a) -&gt; (s -&gt; s) 
+over lsa f s = set lsa (f a) s where 
+  a = view lsa s `</code></pre>
+<p>With these definitions, let’s set about reworking our professor with
+coffee example.</p>
+<p>First, we’re going to want to use names <code>professor</code> and <code>coffee</code> to
+name lenses, rather than fields. Indeed, because of the way we’re going
+to use lenses to organize access to components of values, we’re not
+going to need the field names, except to define the primitive lenses,
+so those field names can be “garbaged up” a bit. To that end, we define</p>
+<pre><code>module NewClasses where
+
+import MicroLens
+
+-- ========================================
+-- Class
+
+data Class = Class
+  { _title :: String
+  , _professor :: Professor
+  } deriving Show
+
+title :: Lens Class String
+title = Lens 
+  { view = _title
+  , set  = \ ttl cls -&gt; cls {_title = ttl} 
+  }
+
+professor :: Lens Class Professor
+professor = Lens 
+  { view = _professor
+  , set  = \ prof cls -&gt; cls {_professor = prof} 
+  }
+
+-- ========================================
+-- Professor
+
+data Professor = Professor
+  { _name :: String
+  , _coffee :: CoffeeCup
+  , _chalk :: ChalkState
+  } deriving Show
+
+name :: Lens Professor String
+name = Lens 
+  { view = _name
+  , set  = \ nm prof -&gt; prof {_name = nm} 
+  }
+
+coffee :: Lens Professor CoffeeCup
+coffee = Lens 
+  { view = _coffee
+  , set  = \ cof prof -&gt; prof {_coffee = cof} 
+  }
+
+chalk :: Lens Professor ChalkState
+chalk = Lens 
+  { view = _chalk
+  , set  = \ clk prof -&gt; prof {_chalk = clk} }
+
+-- ========================================
+-- CoffeeCup
+
+data CoffeeCup = CoffeeCup
+  { _capacity :: Double -- in liters
+  , _quantity :: Double -- in liters.
+  } deriving Show
+
+capacity :: Lens CoffeeCup Double
+capacity = Lens 
+  { view = _capacity
+  , set = (\ cap cof -&gt; cof {_capacity = cap}) 
+  }
+
+quantity :: Lens CoffeeCup Double
+quantity = Lens 
+  { view = _quantity
+  , set = (\ quant cof -&gt; cof {_quantity = quant}) 
+  }
+
+-- ========================================
+-- ChackState
+
+data ChalkState = Whole | Broken
+  deriving Show
+
+-- ========================================</code></pre>
+<p>There is a regrettable amount of boiler-plate in this code,
+but it does enable reasonably elegant solutions to the problems
+posed earlier.</p>
+<pre><code>sip :: Class -&gt; Class
+sip = over (professor &lt;.&gt; coffee &lt;.&gt; quantity)
+    $ \q -&gt; 0 `max` q-0.001
+
+dropChalk :: Class -&gt; Class
+dropChalk = set (professor &lt;.&gt; chalk) Broken
+
+refill :: Class -&gt; Class
+refill = over (professor &lt;.&gt; coffee) fill where
+  fill cup = set quantity (view capacity cup) cup</code></pre>
+<p>Yet, if we were really honest with ourselves, we might have a twinge of
+conscience. Our definition of <code>over</code>, which we use twice here, uses both of its
+constituent functions. It uses the lens’s <code>get</code> function for the first time to
+excavate a value of type <code>a</code> that may be buried quite deeply within a value of
+type <code>s</code>. Having excavated value, it applies the function <code>f</code> to it, only to
+have to turn around and dig the same hole again via an application of the lens’s
+<code>set</code> to bury it. Moreover, we really can’t do any better, if <code>view</code> and <code>set</code>
+are our only tools. So with a heavy heart, we contemplate adding a new <code>over</code>
+field to our <code>Lens</code> type:</p>
+<pre><code>data Lens s a = Lens 
+  { view :: s -&gt; a 
+  , set :: a -&gt; s -&gt; s
+  , over :: (a -&gt; a) -&gt; s -&gt; s 
+  }</code></pre>
+<p>And now, having thought of another access pattern (modification), we might
+wonder what else we’ve missed. How about a modification that might fail, i.e.,
+<code>overMaybe :: Len s a -&gt; (a -&gt; Maybe a) -&gt; s -&gt; Maybe s</code>? Or perhaps a
+modification that takes place in an context with effects, e.g.,
+<code>overIO :: Lens s a -&gt; (a -&gt; IO a) -&gt; (s -&gt; IO s)</code>? Suddenly, we’re looking at a lot more
+complexity, and with a shaken confidence in our belief that we’ve
+captured all of the access patterns we should care about.</p>
+<pre><code>data Lens s a = Lens 
+  { view :: s -&gt; a 
+  , set :: a -&gt; s -&gt; s
+  , over :: (a -&gt; a) -&gt; s -&gt; s 
+  , overMaybe :: (a -&gt; Maybe a) -&gt; s -&gt; Maybe s 
+  , overIO :: (a -&gt; IO a) -&gt; s -&gt; IO s 
+}</code></pre>
+<p>Of course, we can simplify the problem by generalizing the last couple
+of components:</p>
+<pre><code>data Lens s a = Lens 
+  { view :: s -&gt; a 
+  , set :: a -&gt; s -&gt; s 
+  , over :: (a -&gt; a) -&gt; s -&gt; s 
+  , overM :: Monad m =&gt; (a -&gt; m a) -&gt; s -&gt; m s 
+  }</code></pre>
+<p>This makes us happier, because there’s less to do, and less of a sense that we
+might have missed something. Unfortunately, we can’t actually do this, because
+the type of <code>overM</code> involves the type variable <code>m</code> which is out of scope, and so
+this won’t type check. There is subtlety here. Haskell, as defined, allows
+polymorphic types, but polymorphic type definitions require that free variables
+on the right hand side of a definition occur on the left hand side, which is
+exactly what <code>m</code> doesn’t do.</p>
+<p>And why does this limitation exist? <strong>Haskell, as defined, allows for polymorphic
+expressions, but not for polymorphic values. The full type of any <em>value</em> has to
+has to be fully grounded.</strong></p>
+<p>But we want <code>overM</code>, <em>as a value</em> to retain its polymorphism. It would seem we’re
+at an impasse. But programming language research continued after Haskell was first
+defined, and efficient ways of implementing polymorphic values because feasible.
+There is a language extension <code>RankNTypes</code> that enables this. Briefly, <code>RankNTypes</code>
+enables the introduction of <em>explicit</em> uses of <code>forall</code> quantification over type
+variables. With the <code>RankNTypes</code> extension enabled, the limitation that all values
+must have fully grounded types is still present, but a fully grounded type can now
+include an explicitly quantified variable, leaving us with the curious result that
+a value can be simultaneously polymorphic and of fully grounded type. It’s a bit
+head spinning, but let’s plow on…</p>
+<pre><code>data Lens s a = Lens 
+  { view :: s -&gt; a 
+  , set :: a -&gt; s -&gt; s 
+  , over :: (a -&gt; a) -&gt; s -&gt; s 
+  , overM :: forall m. Monad m =&gt; (a -&gt; m a) -&gt; s -&gt; m s 
+  }</code></pre>
+<p>Note that we’ll need to enable <code>RankNTypes</code>, either via an explicit directive</p>
+<pre><code>{-# LANGUAGE RankNTypes #-}</code></pre>
+<p>or by using a language version (<code>GHC2021</code> or <code>GHC2024</code>) that enables this extension
+automatically. The later is an indication that the <code>RankNTypes</code> extension has been
+in use a long time, has been stable, and has been found to be of fairly general use.</p>
+<p>Indeed, the “trick” that allowed for the consistent use of reference variable in the
+<code>ST</code> monad also relied on <code>RankNTypes</code>.</p>
+<p>It should be clear that we can define <code>over</code> in terms of <code>overM</code> by performing
+our calculation in the <code>Identity</code> monad, and then escaping from it.</p>
+<pre><code>over :: Lens s a -&gt; (a -&gt; a) -&gt; s -&gt; s
+over lsa f s = runIdentity (overM lsa (pure . f) s)</code></pre>
+<p>and this definition begs to be reworked by our usual trick of introducing a composition
+and \(\eta\) reducing:</p>
+<pre><code>over isa f = runIdentity . overM lsa (pure . f)</code></pre>
+<p>Moreover, we realize that we can efficiently define <code>set</code> in terms of
+<code>over</code> by “modifying” via a constant function:</p>
+<pre><code>set :: Lens s a -&gt; a -&gt; s -&gt; s 
+set lens a = over lens (const a)</code></pre>
+<p>This leaves us with</p>
+<pre><code>data Lens s a = Lens
+  { view :: s -&gt; a 
+  , overM :: forall m. Monad m =&gt; (a -&gt; m a) -&gt; (s -&gt; m s)
+  }</code></pre>
+<p>Of course, we still have to implement <code>(&lt;.&gt;)</code>, which turns out to be
+surprisingly easy:</p>
+<pre><code>(&lt;.&gt;) :: Lens s t -&gt; Lens t u -&gt; Lens s u
+lst &lt;.&gt; ltu = Lens 
+  { view = view ltu . view lst
+  , overM = overM lst . overM ltu
+  }</code></pre>
+<p>and we have to figure out if we can implement <code>overM</code>. Let’s recall
+the definition of the <code>Class</code> type:</p>
+<pre><code>data Class = Class
+  { _title :: String
+  , _professor :: Professor
+  } </code></pre>
+<p>The <code>overM</code> member of the <code>professor</code> lens will have type</p>
+<pre><code>overM :: forall m. Monad m 
+      =&gt; (Professor -&gt; m Professor) -&gt; Class -&gt; m Class</code></pre>
+<p>So we start:</p>
+<pre><code>overM f cls = _</code></pre>
+<p>If we’re going to use <code>f</code>, we have to find a <code>Professor</code> to apply it to. The only
+available candidate (and it makes sense here) is the <code>_professor</code> field of <code>cls</code>:</p>
+<pre><code>overM f cls = _ (f (_professor cls))</code></pre>
+<p>which we might rewrite, according to our usual bias to introduce compositions, as</p>
+<pre><code>overM f cls = _ (f . _professor $ cls)</code></pre>
+<p>This expression has type <code>m Professor</code>. We need to produce a value of type
+<code>m Class</code>. How can we do this? A natural approach is via an <code>fmap</code>, and we
+know this is ok because <code>m</code> is a <code>Monad</code> and so a <code>Functor</code>.</p>
+<p>So</p>
+<pre><code>overM f cls = _ &lt;$&gt; (f . _professor $ cls)</code></pre>
+<p>and we’ve reduced our problem to finding an expression of type <code>Professor -&gt; Class</code>.
+This is easy enough, we’ll modify our <code>cls</code> value to have the desired <code>_professor</code></p>
+<pre><code>overM f cls = (\prof -&gt; cls { _professor = prof} ) 
+                &lt;$&gt; (f . _professor $ cls)</code></pre>
+<p>Our <em>new</em>, <em>improved</em> lens definition comes with significant tradeoffs. On
+the debit side, the boilerplate in defining lenses is indisputably uglier,
+cf.</p>
+<pre><code>professor :: Lens Class Professor
+professor = Lens 
+  { view = _professor
+  , overM = \ f cls -&gt; (\p -&gt; cls { _professor = p})
+                          &lt;$&gt; (f . _professor $ cls)
+  }</code></pre>
+<p>This is not the sort of boilerplate that we’d be happy about having to write
+a lot of, but let’s set that aside for now, as we’re not done pulling rabbits
+out of our hat.</p>
+<p>On the credit side, our lens have considerably more utility, allowing us to
+work with monadically wrapped data, and we do this all the time in Haskell.</p>
+<div class="exercise">
+<p><strong>Exercise</strong> Defining the lenses <code>coffee</code> and <code>quantity</code>, and show that <code>sip</code>
+works as expected on a test case.</p>
+</div>
+<h2 id="van-laarhoven-lenses">van Laarhoven Lenses</h2>
+<p>We’ve gotten pretty far, but a striking observation due to Twan van
+Laarhoven is that we can go further still, and that it is productive to
+do so. First off, let’s look at that definition of <code>overM</code>:</p>
+<pre><code>overM = \ f cls -&gt; (\p -&gt; cls { _professor = p})
+                     &lt;$&gt; (f . _professor $ cls)</code></pre>
+<p>We’re only using <code>fmap</code> here, and none of the specific operations that
+<code>Monad</code> brings to the party. Thus, there’s no obvious reason not to
+generalize this all a bit further, replacing <code>Monad</code> with <code>Functor</code>, and
+renaming <code>overM</code> to be <code>overF</code>.</p>
+<p>So here is Twan’s insidious question: We’ve observed that we can define <code>over</code>
+from <code>overM</code> (and the same argument goes through for the more general <code>overF</code>)
+by cleverly using the <code>Identity</code> type as our functor, and we can derive <code>set</code>
+from <code>over</code> by using the <code>const</code> function. Can we somehow derive <code>view</code> as well,
+by somehow choosing the right <code>Functor</code>?</p>
+<p>If we could, it would have to be a peculiar type constructor, because it will have to
+carry a value of type <code>a</code> out of <code>m s</code>, even though <code>a</code> doesn’t appear in <code>m s</code>.
+But we can choose the right type constructor, and it’s <code>Const</code>,
+which is defined in <code>Control.Applicative</code>:</p>
+<pre><code>data Const a b = Const { getConst :: a } 
+
+instance Functor (Const a) where 
+  fmap f (Const a) = Const a</code></pre>
+<p>This is an odd type, indeed, with a dependence on a type which is
+ignored, and an <code>fmap</code> function that is effectively a type-casting
+version of the identity function. Still, it turns out to be exactly what
+we need. First, we’ll reduce the definition of <code>Lens</code> to the type of
+<code>overF</code>:</p>
+<pre><code>type Lens s a = forall f . Functor f =&gt; (a -&gt; f a) -&gt; s -&gt; f s</code></pre>
+<p>This code change requires a minor adjustment to</p>
+<pre><code>over :: Lens s a -&gt; (a -&gt; a) -&gt; s -&gt; s
+over lens f = runIdentity . lens (pure . f)</code></pre>
+<p>as the <code>Lens</code> now is its <code>overF</code> function, which doesn’t require
+unpacking any more.</p>
+<p>And we can now define <code>view</code>:</p>
+<pre><code>view :: Lens s a -&gt; s -&gt; a 
+view lsa s = getConst $ lens (a -&gt; Const a) s</code></pre>
+<p>or, after a brief rap on the knuckles by the Code Transformation Fairy:</p>
+<pre><code>view lsa = getConst . lsa Const</code></pre>
+<p>We also need to sort out our definition of <code>&lt;.&gt;</code>, but doing so results
+in a bit of a surprise – composition of lenses (which are now just
+functions from Kleisli arrows to Kleisli arrows) reduces to composition
+of the lenses <em>as</em> functions, so <code>&lt;.&gt;</code> becomes dispensable. We can now
+implement lenses with somewhat less, and somewhat less annoying boilerplate,
+e.g.,</p>
+<pre><code>title :: Lens Class String
+title f cls = (\s -&gt; cls { _title = s }) 
+               &lt;$&gt; (f . _title $ cls)</code></pre>
+<p>and implement <code>sip</code> as</p>
+<pre><code>sip = over (professor . coffee . quantity)
+           $ \q -&gt; max 0 (q - 0.001) `</code></pre>
+<p>Pretty slick. But we’re not done.</p>
+<h2 id="practicalities">Practicalities</h2>
+<p>If we’re going to get serious about lenses, it’s time to stop this pedagogical
+rolling of our own lenses, and to use a lens library that has seen some serious,
+sustained attention. While there are other lens libraries, and legitimate
+reasons to use them, we’re going to use Edward Kmett’s <code>lens</code> package. Please
+understand that this is not small, and will result in surprising long initial
+builds as <code>lens</code> and its dependencies are downloaded and built.</p>
+<p>Best to resign yourself now.</p>
+<p>But let’s see what’s gained, by looking at a relatively lightweight
+adaptation of our code to use Kmett’s <code>lens</code> library:</p>
+<pre><code>{-# LANGUAGE TemplateHaskell #-}
+
+module Main where
+
+import Control.Lens
+
+data Class = Class
+  { _title :: String
+  , _professor :: Professor
+  }
+
+data Professor = Professor
+  { _name :: String
+  , _coffee :: CoffeeCup
+  , _chalk :: ChalkState
+  }
+
+data CoffeeCup = CoffeeCup
+  { _capacity :: Double -- liter
+  , _quantity :: Double -- liters
+  }
+
+data ChalkState = Whole | Broken
+
+makeLenses ''Class
+makeLenses ''Professor
+makeLenses ''CoffeeCup
+
+sip :: Class -&gt; Class
+sip = over (professor . coffee . quantity) $ subtract 0.001
+
+start :: Class
+start = Class { _title = &quot;cmsc-22311&quot;, _professor = prof } where
+  prof = Professor 
+    { _name = &quot;Stuart Kurtz&quot;
+    , _coffee = cup
+    , _chalk = Broken 
+    }
+  -- is cup half full, or half empty?
+  cup = CoffeeCup { _capacity = 0.5, _quantity = 0.25 } 
+
+main :: IO ()
+main = do
+  let end = sip start
+  print $ view (professor . coffee . quantity) end</code></pre>
+<p>The directive <code>{-# LANGUAGE TemplateHaskell #-}</code>, enables the use of Template
+Haskell within this file. Template Haskell is a meta-programming system for
+Haskell, i.e., it enables us to use Haskell to write Haskell, and incorporate
+the resulting <em>splices</em> our source files.</p>
+<p>The benefit of doing so is apparent from the <code>makeLenses</code> lines, which are
+splices that build full sets of lenses for our datatypes. Haskell can’t do that,
+but Template Haskell, with its ability to introspect over class definitions,
+can. And we don’t need to know how it works, only how to create the splices we need.</p>
+<p>Note too that the convention we’ve been using of naming fields within
+records with initial underscores is enforced here—the splice function
+<code>makeLenses</code> depends on it.</p>
+<p>Kmett’s library is huge, and part of that is that he defines a
+large variety of infix operators that work with lenses, e.g., <code>(^.)</code> for
+<code>flip view</code>, <code>(.~)</code> for <code>set</code>, and <code>(%~)</code> for <code>over</code>. Thus, e.g., Kmett
+would rewrite a few lines of our lines:</p>
+<pre><code>sip :: Class -&gt; Class 
+sip = professor . coffee . quantity 
+        %~ \q -&gt; max 0 (q - 0.001) 
+        
+main :: IO ()
+main = do 
+  let end = sip start 
+  print $ end ^. professor 
+               . coffee 
+               . quantity</code></pre>
+<p>Note especially the last expression within the <code>do</code> of the definition of <code>main</code>.
+There’s a pun here between <code>(.)</code> as used by functional programmers to mean
+function composition, and <code>.</code> as used in procedural languages as a field
+selector for a product type, like C’s <code>struct</code>. Kmett is clearly smitten by this
+pun, and he looks for opportunities to develop it further. Whether or not it is
+even remotely a good idea to organize a library so as to make functional code
+look like procedural code, and for the analogy suggested thereby to be a
+faithful one, is a question over which people of good faith can disagree; but
+clearly is one that adds to the overall controversy around lenses within the
+Haskell community.</p>
+<p>And still, Kmett isn’t really done… There are versions of the
+Kmett’s operators that act within a state monad, which is really the
+only sensible way to organize a simulation. To that end, we’ll define a
+simulation as follows:</p>
+<pre><code>sim :: StateT Class IO ()
+sim = do
+  professor . coffee . quantity %= \q -&gt; max 0 (q - 0.001)
+  professor . chalk .= Broken
+
+  q &lt;- use $ professor . coffee . quantity
+  liftIO . putStrLn $ unwords [&quot;quantity:&quot;, show q]
+  c &lt;- use $ professor . chalk
+  liftIO . putStrLn $ unwords [&quot;chalk state:&quot;, show c]
+
+main :: IO ()
+main = evalStateT sim start   </code></pre>
+<p>In this version of the code, we’ve dispensed with <code>sip</code>, and instead
+code its effect directly in <code>sim</code>. The first line uses the <code>(%=)</code>
+operator to modify the underlying state value. The second line uses
+<code>(.=)</code> to effect an assignment, in much the same way. The third and
+fifth lines use the <code>use</code> function to view a value (Haskell doesn’t
+have unary operators, so Kmett can’t define one), and the fourth and
+sixth do IO.</p>
+<p>This code looks procedural, with the outermost <code>professor</code> lens
+functioning in analogy to a local variable with that name in procedural
+code.</p>
+<h2 id="s-t-a-bed-semantic-editor-combinators">s t a b’ed: Semantic Editor Combinators</h2>
+<p>I’ve made a few remarks about types. In Kmett’s lens library, the
+lenses we’ve been dealing with are actually simple lenses, which can be
+declared as <code>Lens' s a</code>. The actual
+definition of <code>Lens</code> involves four(!) parameters, and has the form:</p>
+<pre><code>type Lens s t a b =
+  forall f . (Functor f) =&gt; (a -&gt; f b) -&gt; s -&gt; f t</code></pre>
+<p>The point to this is that we may want to use setters or mutators that
+change the type of the outer structure, cf.,</p>
+<pre><code>data Box a = Box { _goody :: a }
+ deriving Show
+
+makeLenses ''Box `</code></pre>
+<p>Now</p>
+<pre class="interactive"><code>&gt; let b = Box 1 :: Box Int
+&gt; set goody b &quot;one&quot; 
+Box {_goody = &quot;one&quot;}</code></pre>
+<p>What happened here is perfectly natural – we set the value of a hole
+to be a different type than it previously contained, with the effect of
+producing a mutated value with a different type <code>Box String</code> than its
+input type.</p>
+<h2 id="concluding-remarks">Concluding Remarks</h2>
+<p>This lecture has barely scratched surface of lenses. In particular, other data
+structures (tuples, lists, maps, set) can have lenses, and lenses are a part of
+a large and growing ecosystem of <em>Optics</em> which provide us new ways to see and
+manipulate data. This lecture isn’t really intended to teach you Optics so much
+as to let you know that they’re out there, and may worth learning depending on
+your programming requirements and style.</p>
+<p>Remember our opening quote? <em>The wand chooses wizard.</em> Perhaps this is so. But
+the wizard has a lot of work to do learning the various incantations that,
+together with the wand, accomplish the magic the wizard intends. So it is
+with Optics.</p>
+<h2 id="references">References</h2>
+<p>I recommend Chris Penner’s “Optics by Example,” LeanPub.com, as a <em>practical</em>
+introduction to Optics in general.</p>
+
+</div>
+
+<div id="foot">
+<hr />
+    &copy; 2009–2026 Stuart A. Kurtz<br />
+    Last modified: March  6, 2026
+</div>
+
+</body>
+</html>
