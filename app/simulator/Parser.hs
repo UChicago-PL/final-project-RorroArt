@@ -10,16 +10,12 @@ import Data.Maybe (fromMaybe)
 import Data.Word (Word32)
 import ISA qualified
 
--- Output type
-
 data ProgramTyped = ProgramTyped
   { ptRounds :: !Int,
     ptBatchSize :: !Int,
     ptProgram :: ![ISA.Bundle ()]
   }
   deriving (Show, Eq)
-
--- File I/O
 
 parseProgramPayloadFileTyped :: FilePath -> IO (Either String ProgramTyped)
 parseProgramPayloadFileTyped = parseProgramPayloadFileTypedWith ISA.defaultMachineConfig
@@ -110,8 +106,6 @@ pSlot s0 = do
           _ -> goArgs (n : acc) rest
         _ -> Left "expected ',' or ')' in slot args"
 
--- Bundle: {"engine": [slots, ...], ...}
-
 pBundle :: ISA.MachineConfig -> Int -> P (ISA.Bundle ())
 pBundle cfg ix s0 = do
   (pairs, s1) <- commaSep '{' '}' pEnginePair s0
@@ -123,8 +117,6 @@ pEnginePair s0 = do
   ((), s2) <- ch ':' s1
   (slots, s3) <- commaSep '[' ']' pSlot s2
   Right ((key, slots), s3)
-
--- Top-level: {"rounds": N, "batch_size": N, "program": [...]}
 
 parseProgram :: ISA.MachineConfig -> String -> Either String ProgramTyped
 parseProgram cfg src = do

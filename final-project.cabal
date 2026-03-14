@@ -45,6 +45,31 @@ executable parse-test
     build-depends:
         final-project
 
+test-suite pbt
+    import:           shared
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test, app/simulator
+    main-is:          PBT.hs
+    other-modules:
+        Test.Bridge
+        Test.Gen
+        Sim.Exec
+        Sim.MemoryIO
+        Sim.Runner
+        Sim.StateAccess
+        Sim.Types
+        Sim
+    build-depends:
+        final-project
+        , aeson >= 2.0
+        , bytestring >= 0.11 && < 0.13
+        , containers >= 0.6 && < 0.7
+        , mtl >= 2.3 && < 2.4
+        , process
+        , hedgehog >= 1.2
+        , text >= 1.2
+        , transformers >= 0.5
+
 executable compiler
     import:           shared
     hs-source-dirs:   app/compiler
