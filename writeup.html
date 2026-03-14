@@ -26,11 +26,13 @@
 <p>For our final project, we wrote a compiler and simulator targeting a VLIW+SIMD accelerator.
 The compiler and simulator are based on a performance engineering challenge written by Anthropic, in which the program of interest hashes and traverses a forest data structure. We wrote an optimizing compiler that generates a list of VLIW
 <em>bundles</em>, each representing one cycle of parallel work on the target machine. Our simulator
-implements a cycle-by-cycle... @RODRI FINISH</p>
-
-<!-- Along the way the compiler performs constant folding, dead code elimination, -->
-<!-- automatic vectorization, peephole optimization, instruction scheduling, -->
-<!-- and VLIW instruction packing.</p> -->
+reimplements Anthropic&rsquo;s reference Python simulator as a monad transformer stack, where each
+layer in the stack corresponds to a distinct simulator concern: configuration, mutable state,
+tracing, and error handling. Along the way the compiler performs constant folding, dead code elimination,
+automatic vectorization, peephole optimization, instruction scheduling,
+and VLIW instruction packing. We verified the simulator&rsquo;s correctness through
+property-based testing with Hedgehog, comparing cycle traces against the Python reference
+across 1000 randomly generated programs.</p>
 
 <p>Our compiler is designed as a sequence of composable passes:</p>
 
@@ -42,6 +44,13 @@ implements a cycle-by-cycle... @RODRI FINISH</p>
 
 <p>Each of these is a pure function, and the whole pipeline is an expression
 whose value is the final program.</p>
+
+<p>This writeup is organized in two parts. Part&nbsp;I covers the compiler: its
+intermediate representation, optimization passes, and code generation pipeline.
+Part&nbsp;II covers the simulator: its monad transformer architecture, execution
+semantics, and the property-based testing infrastructure used to validate it.</p>
+
+<h1>Part I: The Compiler</h1>
 
 <h2 id="target-machine">The Target Machine</h2>
 
@@ -885,6 +894,383 @@ This is a compile-time guarantee that the compiler can only emit valid
 instructions. In a language without ADTs, this guarantee would require runtime
 validation or external schema checking.</p>
 
+<h1>Part II: The Simulator and Property-Based Testing</h1>
+
+<h2 id="sim-goal">The Goal</h2>
+
+<p>The reference implementation of Anthropic&rsquo;s simulator is a Python class &mdash; roughly
+200 lines of imperative code that mutates dictionaries and lists in place. Translating
+it line-for-line into Haskell would be awkward and pointless. The interesting question
+here is whether we can write a simulator, using Haskell&rsquo;s type system and abstractions,
+that is <em>clearer</em> than the original. But how?</p>
+
+<p>It turns out that we can decompose the simulator into a set of independent(ish) concerns:</p>
+
+<ol>
+<li>The machine configuration. Things like the scratch size.</li>
+<li>The mutable state, that is, the scratch and memory.</li>
+<li>Execution.</li>
+<li>Tracing and Debugging, which the Python implementation achieves via custom debug
+instructions that, in our opinion, pollute the ISA.</li>
+<li>Error Handling. Do not divide by zero!</li>
+</ol>
+
+<p>Then, the question becomes whether our implementation could take advantage of and
+reflect this separation.</p>
+
+<p>The answer is yes. In particular, we can achieve this via a Monad Transformer stack,
+where each concern maps to a layer in the stack, and we also get the &ldquo;onion&rdquo; effect.
+In other words, adding or removing a concern (such as disabling tracing entirely) is a
+matter of changing which layers you peel, not rewriting execution logic, just like
+peeling an onion.</p>
+
+<p>However, a <em>clear</em> and <em>elegant</em> simulator is useless if it does not work correctly.
+It is easy to not get VLIW + SIMD semantics right in very subtle ways. Fortunately,
+we have a reference implementation, and the amazing property based testing tools in
+Haskell! Using these tools we can ensure that our implementation matches the reference
+across a good, randomly generated, set of programs.</p>
+
+<h2 id="sim-architecture">Architecture: A Monad Transformer Stack (<code>Sim/Types.hs</code>)</h2>
+
+<p>The simulator&rsquo;s type is a four-layer transformer stack:</p>
+
+<pre><code>type SimM a =
+  ReaderT SimConfig
+    (StateT MachineState
+      (WriterT (Seq CycleTrace)
+        (ExceptT SimError IO))) a</code></pre>
+
+<p>Each layer corresponds to one simulator concern:</p>
+
+<table>
+<tr><th>Layer</th><th>Type</th><th>Concern</th></tr>
+<tr><td><code>ReaderT SimConfig</code></td><td>Immutable config</td><td>Machine limits, scratch size, trace/pause flags</td></tr>
+<tr><td><code>StateT MachineState</code></td><td>Mutable state</td><td>Core registers, memory, cycle counter</td></tr>
+<tr><td><code>WriterT (Seq CycleTrace)</code></td><td>Append-only output</td><td>Cycle-by-cycle trace records</td></tr>
+<tr><td><code>ExceptT SimError</code></td><td>Short-circuit errors</td><td>Divide-by-zero, out-of-bounds, unknown PC</td></tr>
+</table>
+
+<p>The <code>SimConfig</code> record holds values that never change during execution: the machine
+configuration (slot limits), scratch-pad size, and flags for enabling pause and trace
+modes. Placing these in <code>ReaderT</code> means every function in the simulator can read them
+with <code>ask</code>, and none can accidentally modify them.</p>
+
+<p><code>MachineState</code> holds everything that <em>does</em> change: the core&rsquo;s program counter,
+run state, scratch registers (an <code>IntMap Word32</code> of 1536 entries), the flat memory
+image, and the cycle counter. <code>StateT</code> gives us <code>get</code> and <code>put</code>, in some ways this
+is the same interface an imperative simulator would use, but scoped to the
+<code>runStateT</code> call.</p>
+
+<p>The <code>WriterT</code> layer is the one that benefits most from being a separate concern.
+Cycle traces, records of what each cycle wrote to scratch and memory, accumulate via
+<code>tell</code>. When tracing is disabled, the trace sequence stays empty. The execution code
+does not branch on whether tracing is on; it simply emits a <code>CycleTrace</code> after each
+cycle, and the runner decides whether to <code>tell</code> it based on the config. If we wanted to
+strip tracing entirely, we could replace <code>WriterT</code> with <code>Identity</code> and the execution
+modules would not need to change.</p>
+
+<p><code>ExceptT SimError</code> handles the four runtime errors the ISA can produce:
+divide-by-zero (<code>SimDivideByZero</code>), scratch out-of-bounds (<code>SimScratchOob</code>),
+memory out-of-bounds (<code>SimMemoryOob</code>), and unknown program counter
+(<code>SimUnknownPc</code>). Any instruction handler can <code>throwError</code> and the entire
+simulation short-circuits &mdash; no error codes to check, no sentinel values to
+propagate.</p>
+
+<h3 id="sim-stepm">The Inner Monad: <code>StepM</code></h3>
+
+<p>Execution within a single cycle uses a second, smaller stack:</p>
+
+<pre><code>type StepM a =
+  ReaderT StepSnapshot (StateT PendingWrites (Either SimError)) a</code></pre>
+
+<p><code>StepSnapshot</code> freezes the machine state at the beginning of the cycle: the current
+PC, scratch registers, and memory. <code>PendingWrites</code> accumulates the writes that will be
+committed at cycle end. This design is really important to preserve the semantics of the
+machine. All slots in a VLIW bundle execute in parallel, so all reads must see the state
+from the <em>beginning</em> of the cycle and all writes must commit atomically at the end. That
+said, we are trusting the programmer to not bundle instructions with data hazards.</p>
+
+<h2 id="sim-exec">Execution Semantics (<code>Sim/Exec.hs</code>)</h2>
+
+<p>Bundle execution follows a snapshot-then-commit protocol:</p>
+
+<pre><code>executeBundle :: ISA.Bundle () -> SimM PendingWrites
+executeBundle bundle = do
+  cfg &lt;- ask
+  ms  &lt;- get
+  let snap = buildSnapshot cfg ms
+  case runStateT
+         (runReaderT (executeBundleSlots bundle) snap)
+         emptyPendingWrites of
+    Left err -> throwError err
+    Right (_, pw) -> do
+      commitPendingWrites pw
+      pure pw</code></pre>
+
+<p>First, the current machine state is frozen into a <code>StepSnapshot</code>. Then
+<code>executeBundleSlots</code> runs every slot in the bundle &mdash; ALU, VALU, Load, Store,
+Flow &mdash; against that snapshot, accumulating writes into <code>PendingWrites</code>. Finally,
+<code>commitPendingWrites</code> applies the buffered writes to the real machine state in one
+step.</p>
+
+<p>Each engine dispatch is a pattern match on the ISA constructors. Scalar ALU:</p>
+
+<pre><code>executeAluSlot :: ISA.AluSlot -> StepM ()
+executeAluSlot (ISA.Alu op dst srcA srcB) = do
+  a &lt;- readScratch srcA
+  b &lt;- readScratch srcB
+  r &lt;- liftEitherStep (aluEval op a b)
+  writeScratch dst r</code></pre>
+
+<p>Vector operations iterate over 8 lanes:</p>
+
+<pre><code>executeValuSlot :: ISA.ValuSlot -> StepM ()
+executeValuSlot slot = case slot of
+  ISA.VBroadcast dest src ->
+    forLane8 (execVBroadcastLane dest src)
+  ISA.MultiplyAdd dest a b c ->
+    forLane8 (execMultiplyAddLane dest a b c)
+  ISA.VAlu op dest a b ->
+    forLane8 (execVAluLane op dest a b)</code></pre>
+
+<p>where <code>forLane8 = forM_ [0..7]</code>. Each lane reads from <code>scratchPlus base lane</code>
+and writes to the corresponding destination lane. In our case, the SIMD width is 8
+consecutive scratch addresses, so the lane loop is just integer arithmetic on
+<code>ScratchAddr</code>.</p>
+
+<p>The <code>readScratch</code> and <code>writeScratch</code> functions in <code>StateAccess</code> enforce the snapshot
+design: reads come from the <code>StepSnapshot</code> (via <code>ReaderT</code>), writes go into
+<code>PendingWrites</code> (via <code>StateT</code>). A slot cannot observe a write made by another slot in
+the same bundle. This guarantee is free, and it falls out of the monad stack.</p>
+
+<h2 id="sim-loop">The Simulation Loop (<code>Sim/Runner.hs</code>)</h2>
+
+<p>The top-level loop is short:</p>
+
+<pre><code>runUntilStop :: [ISA.Bundle ()] -> SimM ()
+runUntilStop bundles = do
+  progressed &lt;- stepCore bundles
+  when progressed (runUntilStop bundles)</code></pre>
+
+<p><code>stepCore</code> fetches the bundle at the current PC, executes it, records a trace if
+tracing is enabled, increments the cycle counter, and returns <code>True</code> if the core is
+still running. When the core halts (or the PC goes out of range), <code>stepCore</code> returns
+<code>False</code> and the loop terminates.</p>
+
+<p>Note: the original Python implementation supports multiple cores, but in Anthropic&rsquo;s
+optimization assignment you are supposed to ignore this and assume a single core. We are
+also only running one core, but we maintain the semantics for simplicity.</p>
+
+<p><code>initMachineState</code> builds a dense <code>IntMap</code> for both scratch (1536 zeros) and
+memory (the provided image). <code>finalMemoryImage</code> reads the <code>IntMap</code> back into a flat
+list for comparison with the reference.</p>
+
+<p>The entire simulator entry point is:</p>
+
+<pre><code>runSimulator
+  :: SimConfig -> [ISA.Bundle ()] -> [Word32]
+  -> ExceptT SimError IO ([Word32], Int, Seq CycleTrace)
+runSimulator cfg bundles mem0 = do
+  let st0 = initMachineState cfg mem0
+  ((_, st1), trace) &lt;-
+    runWriterT
+      (runStateT
+        (runReaderT (runProgram bundles) cfg) st0)
+  pure (finalMemoryImage st1, msCycle st1, trace)</code></pre>
+
+<p>One line peels the entire monad stack. The result is the final memory image, the cycle
+count, and the trace &mdash; all pure values.</p>
+
+<h2 id="pbt">Property-Based Testing with Hedgehog (<code>test/PBT.hs</code>, <code>test/Test/Gen.hs</code>)</h2>
+
+<p>Time to test! The simulator must agree with the Python reference on every cycle, for
+every valid program. This is a natural property to test: generate a random program and
+memory image, run both simulators, compare the traces. Easy right? Well&hellip; This part was
+challenging for a variety of reasons we describe in this section. The first issue we
+encounter is that QuickCheck, their shrinking in particular, was not well suited for this
+task. In the next section we describe the second big problem, running the Python
+implementation from Haskell.</p>
+
+<h3 id="pbt-quickcheck">Why Not QuickCheck</h3>
+
+<p>QuickCheck was the first attempt, and it failed in an instructive way. QuickCheck
+generates a random value and, when a test fails, <em>shrinks the value</em> &mdash; it tries to
+produce a smaller counterexample by removing elements from the generated data. The
+problem is that the generated data is an ISA program with structural invariants: slot
+limits, live-register dependencies, valid memory addresses. Shrinking a bundle list by
+dropping an element can produce a program where a register is read before it is written,
+or where a conditional jump targets a now-nonexistent bundle. The shrunk counterexample
+is not a valid program.</p>
+
+<p>QuickCheck&rsquo;s <code>Arbitrary</code> instances work well for algebraic data where any subterm
+is valid in isolation. ISA programs are not like that. An <code>AluSlot</code> that reads scratch
+address 42 is only valid if a prior bundle wrote to scratch 42. Shrinking must preserve
+this dependency structure, and QuickCheck does not provide a way to express that.</p>
+
+<p>You could validate each example you shrink, but when it comes to Property Based Testing,
+filtering is not really a good idea, because you are wasting time and compute with every
+miss. To illustrate that clearly, imagine you want to generate Python programs, and you
+have a way to test whether a string is valid Python. The naive strategy is to generate
+random strings and filter all of those that are not Python programs. Insane, right?</p>
+
+<h3 id="pbt-hypothesis">Why Not Hypothesis</h3>
+
+<p>Since the reference simulator is Python, using Hypothesis (Python&rsquo;s property-based
+testing library) was a natural thought, especially given that we have experience using it.
+Hypothesis has integrated shrinking: it shrinks the <em>generator&rsquo;s random choices</em>, not
+the generated value, so structural invariants are preserved by construction. This solves
+our problem completely. But using Hypothesis would mean writing the testing harness in
+Python, and this is a Haskell project for a Haskell class. So we decided not to go that
+way, and keep looking for a solution.</p>
+
+<h3 id="pbt-hedgehog">Hedgehog: Integrated Shrinking in Haskell</h3>
+
+<p>This is when we discovered
+<a href="https://hackage.haskell.org/package/hedgehog">Hedgehog</a> solves both problems.
+Like Hypothesis, it shrinks the random byte stream that drives the generator, not the
+generated value. This means the generator&rsquo;s invariants (slot limits, register liveness,
+address validity) are all preserved during shrinking. But the best part is that it is a
+Haskell library!</p>
+
+<h3 id="pbt-generators">The Generators</h3>
+
+<p>The generators in <code>Test/Gen.hs</code> are themselves stateful programs. A <code>GenM</code> monad
+threads a <code>GenEnv</code> that tracks:</p>
+
+<ul>
+<li>Scratch addresses with defined values.</li>
+<li>Scratch addresses holding valid memory pointers.</li>
+<li>Addresses that must not be overwritten, like loop counters.</li>
+<li>And addresses written in the current bundle (WAW prevention).</li>
+</ul>
+
+<pre><code>data GenEnv = GenEnv
+  { geLive      :: !(Set Int),
+    geMemAddrs  :: !(Set Int),
+    geReserved  :: !(Set Int),
+    geBundleDests :: !(Set Int),
+    geMemSize   :: !Int,
+    geScratchSz :: !Int
+  }</code></pre>
+
+<p>Every generator respects these constraints. <code>pickDest</code> chooses a scratch address that
+is neither reserved nor already written in the current bundle. <code>pickFrom live</code> selects
+from the set of addresses with defined values. <code>pickVecBase</code> finds 8 contiguous
+addresses that are all available. <code>commitBundle</code> updates the live set and clears the
+per-bundle destinations.</p>
+
+<p>This is, in effect, a mini type-checker for the ISA embedded in the generator. It
+guarantees that every generated program is well-formed: no reads from undefined registers,
+no WAW hazards within a bundle, no out-of-bounds memory accesses. Five test suites
+exercise different subsets of the ISA:</p>
+
+<ul>
+<li><strong>straight-line</strong>: seed constants, then scalar ALU, loads, stores, selects, and no
+control flow.</li>
+<li><strong>loops</strong>: a counter-driven loop with a body of scalar ops.</li>
+<li><strong>valu</strong>: vector loads, broadcasts, vector ALU &mdash; exercises the SIMD path.</li>
+<li><strong>mixed</strong>: scalar ops, vector ops, and loops in one program.</li>
+<li><strong>all-ops</strong>: includes <code>div</code>, <code>cdiv</code>, and <code>mod</code> with non-zero operands, testing the
+full ALU.</li>
+</ul>
+
+<p>Each suite runs 200 iterations. Every iteration generates a program and memory image,
+runs both simulators, and compares the full cycle traces.</p>
+
+<h2 id="cross-validation">Cross-Validation Against the Python Reference (<code>test/Test/Bridge.hs</code>)</h2>
+
+<h3 id="cross-attempt1">Attempt 1: Subprocess Per Test</h3>
+
+<p>The first version of the bridge spawned a new Python process for every test case:</p>
+
+<pre><code>for each generated (program, memory):
+    write program to temp file
+    uv run scripts/run_ref.py --program tmp.json --mem tmp.bin
+    parse stdout
+    compare</code></pre>
+
+<p>This was unusably slow for two reasons. First, process creation overhead: each test case
+paid the cost of forking, loading the Python interpreter, and importing the reference
+module. Second, and worse: the project uses <code>uv</code> for Python dependency management with
+inline script metadata. Every <code>uv run</code> invocation resolved the dependency tree before
+executing, a fast operation in isolation, but multiplied by 1000 test cases it dominated
+the runtime.</p>
+
+<h3 id="cross-attempt2">Attempt 2: Persistent Server</h3>
+
+<p>The solution was to write <code>run_ref_server.py</code>, a 62-line Python script that stays
+alive for the entire test run:</p>
+
+<pre><code>def main():
+    sys.stdout.write("ready\n")
+    sys.stdout.flush()
+    for line in sys.stdin:
+        req = json.loads(line)
+        trace = run_one(req["program"], req["mem"])
+        sys.stdout.write(json.dumps({"ok": trace}) + "\n")
+        sys.stdout.flush()</code></pre>
+
+<p>The Haskell side starts the server once with <code>bracket startPyServer stopPyServer</code>,
+then sends JSON-encoded test cases over stdin and reads JSON traces from stdout. One
+process, one dependency resolution, 1000 test cases streamed through pipes. The
+<code>Bridge.hs</code> module handles serialization, that is, converting <code>ISA.Bundle ()</code> values
+to JSON using <code>bundleToValue</code>, and parsing the Python response back into
+<code>CycleTrace</code> values.</p>
+
+<p>The comparison between traces is exact: cycle number, PC, scratch writes, memory writes,
+next PC, and run state must all match. Moreover, when both simulators error, the error
+<em>class</em> must match (divide-by-zero, memory out-of-bounds, scratch out-of-bounds, or
+unknown PC), though the exact error messages may differ between languages.</p>
+
+<pre><code>checkEquiv
+  :: PyServer -> ([ISA.Bundle ()], [Word32])
+  -> PropertyT IO ()
+checkEquiv ps (bundles, mem) = do
+  let cfg = defaultSimConfig {scEnableTrace = True}
+  hsResult &lt;- evalIO $
+    runExceptT (runSimulator cfg bundles mem)
+  pyResult &lt;- evalIO $ queryPyServer ps bundles mem
+  case (hsResult, pyResult) of
+    (Right (_, _, hsTrace), Right pyTrace) ->
+      toList hsTrace === pyTrace
+    (Left hsErr, Left pyErr) ->
+      classifyError hsErr === classifyPyError pyErr
+    ...</code></pre>
+
+<h2 id="sim-haskell-techniques">Haskell Techniques in the Simulator</h2>
+
+<p><strong>Monad transformers as architecture.</strong> The <code>SimM</code> stack is not a convenience &mdash;
+it <em>is</em> the architecture. Each transformer layer enforces a separation of concerns that
+in an imperative simulator would be mixed together in a single class. <code>ReaderT</code> for
+config means config cannot be mutated. <code>WriterT</code> for tracing means trace emission cannot
+read or depend on trace history. <code>ExceptT</code> for errors means errors short-circuit without
+explicit checks. The type system enforces what the imperative version relies on convention
+to maintain.</p>
+
+<p><strong><code>StepM</code> as a semantic guarantee.</strong> The inner
+<code>ReaderT StepSnapshot (StateT PendingWrites ...)</code> stack does not merely <em>implement</em>
+snapshot-then-commit semantics &mdash; it <em>enforces</em> them. A slot handler literally cannot
+read from mutable state; it can only read from the frozen snapshot. A slot handler
+literally cannot observe another slot&rsquo;s writes; those writes exist only in
+<code>PendingWrites</code>, which is threaded through <code>StateT</code> but never exposed to
+<code>ReaderT</code>. The VLIW parallel-execution semantics are a consequence of the types, not
+of careful coding.</p>
+
+<p><strong>Pattern matching on shared ADTs.</strong> The execution engine is a family of functions
+that pattern-match on <code>ISA.AluSlot</code>, <code>ISA.ValuSlot</code>, <code>ISA.LoadSlot</code>,
+<code>ISA.StoreSlot</code>, and <code>ISA.FlowSlot</code>. These are the same constructors the compiler
+emits. GHC&rsquo;s exhaustiveness checker ensures that every instruction the compiler can
+produce has a corresponding execution case. Adding a new instruction to <code>ISA.hs</code>
+produces a compile-time warning in the simulator until the case is handled.</p>
+
+<p><strong><code>IntMap</code> for sparse state.</strong> Scratch registers and memory are
+<code>IntMap Word32</code> rather than arrays. This gives O(min(n, W)) lookup with structural
+sharing &mdash; updates produce new maps without copying the entire state. For a
+1536-entry scratch file, the performance is indistinguishable from an array, but the
+immutability makes the snapshot pattern trivial: <code>buildSnapshot</code> just reads the current
+maps, and the snapshot remains valid regardless of what <code>commitPendingWrites</code> does
+later.</p>
+
 <h2 id="summary">Summary</h2>
 
 <p>The compiler transforms a scalar kernel into vectorized, scheduled, bundled
@@ -905,13 +1291,20 @@ to maximize VLIW packing density.</li>
 hazards, and memory conflicts.</li>
 </ol>
 
-<p>The whole pipeline composes into a handful of lines of Haskell. Every intermediate
-form is an algebraic data type, every pass is a pure function, and the
-shared ISA library provides a compile-time contract between the compiler and
-the simulator. The result is a compiler that is small, transparent, and
-efficient &mdash; the scheduler alone reduces bundle count by 23&ndash;38% on
-top of vectorization, bringing the vectorized pipeline to roughly 6.5x fewer
-cycles than the scalar baseline.</p>
+<p>The simulator reimplements Anthropic&rsquo;s reference Python simulator as a monad transformer
+stack in Haskell. The four-layer <code>SimM</code> stack separates configuration, mutable state,
+tracing, and error handling into distinct type-level concerns. The inner <code>StepM</code> stack
+enforces VLIW snapshot-then-commit semantics structurally; slot handlers read from a
+frozen snapshot and write to a pending buffer, and the type system prevents them from
+doing otherwise.</p>
+
+<p>Property-based testing with Hedgehog generates 1000 random ISA programs across five test
+suites and compares the Haskell simulator&rsquo;s cycle traces against the Python reference,
+cycle by cycle. Hedgehog&rsquo;s integrated shrinking preserves the generator&rsquo;s structural
+invariants (register liveness, slot limits, address validity) where QuickCheck&rsquo;s
+value-level shrinking would destroy them. A persistent Python server process,
+communicating over pipes, made cross-language comparison fast enough to run the full suite
+in seconds rather than minutes.</p>
 
 </div>
 
