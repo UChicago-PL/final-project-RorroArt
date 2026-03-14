@@ -20,13 +20,11 @@ import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import ISA qualified
 
--- Generator state: tracks which scratch addrs are readable.
-
 data GenEnv = GenEnv
   { geLive :: !(Set Int),
     geMemAddrs :: !(Set Int),
     geReserved :: !(Set Int),
-    geBundleDests :: !(Set Int), -- dests already used in current bundle (avoid write-write conflicts)
+    geBundleDests :: !(Set Int),
     geMemSize :: !Int,
     geScratchSz :: !Int
   }
@@ -164,7 +162,6 @@ haltBundle = ISA.Bundle [] [] [] [] [ISA.Halt] []
 emptyBundle :: ISA.Bundle ()
 emptyBundle = ISA.Bundle [] [] [] [] [] []
 
--- Seed phase: spread consts across multiple bundles (load limit = 2).
 genSeedBundles :: GenM [ISA.Bundle ()]
 genSeedBundles = do
   nConst <- lift $ Gen.int (Range.constant 1 3)
