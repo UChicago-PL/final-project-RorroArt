@@ -21,37 +21,27 @@
 
 <h1>A Compiler for a VLIW+SIMD Accelerator</h1>
 
-<div class="pullquote">
-<p>The purpose of computing is insight, not numbers.</p>
-<p>&mdash; Richard Hamming</p>
-</div>
-
 <h2 id="introduction">Introduction</h2>
 
-<p>This document describes the design of a small optimizing compiler, written in
-Haskell, that targets a VLIW+SIMD accelerator. The compiler takes a fixed kernel
-&mdash; a program that hashes and traverses a forest data structure &mdash; and
-transforms it through a series of pure functional passes into a flat list of
-<em>bundles</em>, each representing one cycle of parallel work on the target machine.
-Along the way the compiler performs constant folding, automatic vectorization,
-peephole optimization, instruction lowering, and VLIW instruction packing.</p>
+<p>For our final project, we wrote a compiler and simulator targeting a VLIW+SIMD accelerator.
+The compiler and simulator are based on a performance engineering challenge written by Anthropic, in which the program of interest hashes and traverses a forest data structure. We wrote an optimizing compiler that generates a list of VLIW
+<em>bundles</em>, each representing one cycle of parallel work on the target machine. Our simulator
+implements a cycle-by-cycle... @RODRI FINISH</p>
 
-<p>The entire compiler is 1,400 lines of Haskell across 11 modules. Every
-pass is a pure function from one representation to the next. There are no
-mutable data structures, no IO in the compilation pipeline, and no
-monadic plumbing beyond a small <code>State</code> monad in two places (the IR builder
-and the lowering pass). The result is a compiler whose passes compose like
-ordinary functions:</p>
+<!-- Along the way the compiler performs constant folding, dead code elimination, -->
+<!-- automatic vectorization, peephole optimization, instruction scheduling, -->
+<!-- and VLIW instruction packing.</p> -->
+
+<p>Our compiler is designed as a sequence of composable passes:</p>
 
 <pre><code>let fn   = scalarKernel rounds batchSize
-    fn'  = combineMulAdd . vectorizeBatch 8 . canonicalize $ fn
-    ops  = lowerToMachineOps 8 fn'
+    fn'  = combineMulAdd . vectorizeBatch 8
+          . eliminateDeadCode . canonicalize $ fn
+    ops  = schedule (lowerToMachineOps 8 fn')
     bundles = bundleProgram ops</code></pre>
 
-<p>Each of these names is a pure function, and the whole pipeline is an expression
-whose value is the final program. This is a very Haskell way to build a
-compiler, and it&rsquo;s worth understanding both <em>why</em> it works and <em>what</em> each
-piece does.</p>
+<p>Each of these is a pure function, and the whole pipeline is an expression
+whose value is the final program.</p>
 
 <h2 id="target-machine">The Target Machine</h2>
 
@@ -72,31 +62,26 @@ instructions to five independent <em>execution engines</em> in parallel:</p>
 <p>A single cycle can therefore issue up to 12+6+2+2+1 = 23 operations. The
 register file is a flat <em>scratch-pad</em> addressed by integer index
 (<code>ScratchAddr</code>). SIMD operations work on blocks of 8 consecutive scratch
-addresses. Memory is flat and word-addressable. Within a single bundle (one
-cycle), all reads see the state from the <em>beginning</em> of the cycle, and all
-writes commit atomically at the end &mdash; there is no intra-bundle
-forwarding.</p>
+addresses, and memory is flat and word-addressable. Again, each bundle is a single cycle,
+so all reads see the state from the <em>beginning</em> of the cycle, and all
+writes commit atomically at the end.</p>
 
-<p>The compiler&rsquo;s job is twofold: (a) <em>vectorize</em> scalar code to use 8-wide SIMD
+<p>The compiler's job is twofold: (a) <em>vectorize</em> scalar code to use 8-wide SIMD
 where legal, and (b) <em>pack</em> independent operations into each bundle to exploit
 the parallelism of the VLIW execution model.</p>
 
-<p>The ISA is defined as a shared Haskell library (<code>src/ISA.hs</code>) that both the
-compiler and the simulator import. This means the compiler constructs typed ISA
-values &mdash; actual <code>AluSlot</code>, <code>ValuSlot</code>, <code>LoadSlot</code> values &mdash; and the
-simulator pattern-matches on the same constructors to execute them. If someone
-adds a new <code>AluOp</code> variant, both the compiler and simulator get non-exhaustive
-pattern warnings until they handle it. <strong>The types guarantee that the compiler can
-only emit instructions the simulator knows how to execute.</strong></p>
+<p>The compiler constructs typed ISA values &mdash; actual <code>AluSlot</code>, <code>ValuSlot</code>, <code>LoadSlot</code> values &mdash; and the simulator pattern-matches on the same constructors to execute them. These types should guarantee that the compiler can only emit instructions the simulator knows how to execute.</strong></p>
 
 <h2 id="lifecycle">The Lifecycle of a Program</h2>
 
-<p>A program passes through seven stages, each a pure function that transforms the
+<p>A program passes through nine stages, each a pure function that transforms the
 previous stage&rsquo;s output:</p>
 
 <pre><code>  scalarKernel        -- build the IR            (BaselineKernel.hs)
       |
   canonicalize        -- constant fold           (Canonicalize.hs)
+      |
+  eliminateDeadCode   -- remove unused bindings  (DCE.hs)
       |
   vectorizeBatch      -- auto-vectorize loops    (Vectorize.hs)
       |
@@ -104,39 +89,39 @@ previous stage&rsquo;s output:</p>
       |
   lowerToMachineOps   -- lower to machine ops    (FinalLowering.hs)
       |
+  schedule            -- reorder for packing     (Schedule.hs)
+      |
   bundleProgram       -- VLIW bundle packing     (Bundle.hs)
       |
   renderProgramPayload -- emit Python literal    (PythonInterop.hs)</code></pre>
 
-<p>The first four stages operate on <code>Function</code>, the compiler&rsquo;s intermediate
+<p>The first five stages operate on <code>Function</code>, the compiler&rsquo;s intermediate
 representation. <code>lowerToMachineOps</code> converts to <code>[MachineOp]</code>, a flat
 list of individual machine instructions with metadata.
-<code>bundleProgram</code> packs those into <code>[ISA.Bundle ()]</code>, the final VLIW bundles.
-<code>renderProgramPayload</code> serializes the bundles as a Python dict literal that the
-test harness evaluates.</p>
+<code>schedule</code> reorders those ops for better VLIW packing.
+<code>bundleProgram</code> packs them into <code>[ISA.Bundle ()]</code>, the final VLIW bundles.
+<code>renderProgramPayload</code> serializes the bundles as a Python dict literal for testing with Anthropic's provided Python simulator.</p>
 
 <p>Let us now examine each stage in detail.</p>
 
 <h2 id="the-ir">The Intermediate Representation (<code>FinalIR.hs</code>)</h2>
 
-<p>The IR is the heart of the compiler. It is a small structured-SSA language with
-three key design properties:</p>
+<p>The IR is a structured-SSA language with three key design properties:</p>
 
 <p><strong>1. SSA values.</strong> Every <code>Let</code> introduces a fresh <code>Id</code> that is defined exactly
 once and used by later statements through <code>Expr = Var Id | Const Word32</code>.
-This is the <em>static single assignment</em> discipline: each name is assigned exactly
+This discipline is known as <em>static single assignment</em>: each name is assigned exactly
 once, and that definition dominates all uses. This makes dataflow analysis
 trivial &mdash; to find where a value comes from, you look up its (unique)
 definition.</p>
 
 <p><strong>2. Structured control flow.</strong> The only looping construct is <code>For</code>, which
-carries its bounds and body inline. There are no arbitrary gotos, no basic
-blocks, no phi nodes. The IR is a tree, not a graph. This means loop
-transformations are <em>tree rewrites</em> rather than graph surgeries.</p>
+carries its bounds and body inline. There are no arbitrary gotos, basic
+blocks, or phi nodes.</p>
 
 <p><strong>3. Named memory regions.</strong> Loads and stores address a <code>Buffer</code> (a symbolic
-memory region) at an <code>Expr</code> offset, instead of raw pointer arithmetic. This is
-what makes the IR <em>analyzable</em>.</p>
+memory region) at an <code>Expr</code> offset, instead of pointer arithmetic. This is
+what makes the IR easily analyzable.</p>
 
 <h3 id="types">Types</h3>
 
@@ -146,11 +131,8 @@ what makes the IR <em>analyzable</em>.</p>
 corresponding to <code>w</code> consecutive scratch-pad slots at the machine level. The
 kernel starts entirely scalar; the vectorizer introduces <code>Vec</code> types.</p>
 
-<p>There is no <code>Ptr</code>, no <code>Mask</code>, no <code>Mem</code> token type. Pointers are
-represented as <code>I32</code> values. Memory ordering follows statement order. Boolean
-conditions are <code>I32</code> values (0 = false, nonzero = true). This simplicity is a
-deliberate choice, and we will examine the alternative &mdash; a richer type
-system with pointer types and memory tokens &mdash; later in this document.</p>
+<p>Pointers are represented as <code>I32</code> values. Boolean conditions are <code>I32</code> values (0 = false, nonzero = true). This simplicity is a deliberate choice, and we will later examine the alternative (a richer type
+system with pointer types and memory tokens).</p>
 
 <h3 id="buffers">Buffers: Symbolic Memory</h3>
 
@@ -169,8 +151,8 @@ allocates:</p>
 
 <p>Using symbolic buffer names instead of raw pointers is the single most
 important design decision in the IR. It is what makes the vectorizer
-<em>possible</em> without a general-purpose alias analysis. The vectorizer can ask,
-&ldquo;Does this load use the induction variable as an index into
+<em>possible</em> without a general-purpose alias analysis. The vectorizer can ascertain
+&ldquo;Does this load use the induction ariable as an index into
 <code>InpIdx</code>?&rdquo; by pattern-matching on the buffer name. It never needs to solve the
 undecidable problem of whether two arbitrary pointer expressions might alias.</p>
 
@@ -204,6 +186,7 @@ flows through the data.</p>
 <tr><td><code>RMulAdd a b c</code></td><td>Fused multiply-add: <code>a*b + c</code></td><td>Peephole pass</td></tr>
 <tr><td><code>RSelect c a b</code></td><td>Conditional select: <code>c &ne; 0 ? a : b</code></td><td>Kernel</td></tr>
 <tr><td><code>RLoad kind buf ix</code></td><td>Load from <code>buf[ix]</code></td><td>Kernel; kind rewritten by Vectorize</td></tr>
+<tr><td><code>RReduce op e</code></td><td>Horizontal vector-to-scalar reduction</td><td>Kernel builders (reduction patterns)</td></tr>
 <tr><td><code>RVBroadcast w e</code></td><td>Broadcast scalar to vector</td><td>(Available for future use)</td></tr>
 </table>
 
@@ -221,15 +204,25 @@ peephole pass when it discovers a <code>Mul</code> followed by an <code>Add</cod
 it to a single <code>multiply_add</code> VALU slot for vectors, or two ALU slots (mul
 then add) for scalars.</p>
 
+<p><code>RReduce op e</code> represents a horizontal reduction of a vector value <code>e</code> to a
+scalar using the associative operation <code>op</code>. It is introduced by kernel builders
+for reduction patterns and lowered to a log&#8322;(w) tree of scalar ALU ops &mdash;
+for example, an 8-wide <code>RReduce Add v</code> becomes three stages of pairwise
+additions.</p>
+
 <h3 id="stmts">Statements</h3>
 
 <pre><code>data Stmt
   = Let !Id !Ty !Rhs
   | Store !StoreKind !Buffer !Expr !Expr
-  | For !Id !Int !Int !Int ![Stmt]   -- iv, start, end, step, body</code></pre>
+  | For !Id !Int !Int !Int ![(Id, Expr)] ![Stmt]   -- iv, start, end, step, carries, body</code></pre>
 
 <p><code>Let</code> introduces a new SSA value. <code>Store</code> is a side effect.
-<code>For</code> is a counted loop with compile-time integer bounds and a step. The body
+<code>For</code> is a counted loop with compile-time integer bounds, a step, a list of
+carries, and an inline body. The carries field holds loop-carried accumulators
+&mdash; <code>(Id, Expr)</code> pairs where each <code>Id</code> is initialized from its <code>Expr</code>
+before the first iteration and updated by the loop body. An empty carries list
+(the common case) means the loop has no cross-iteration state. The body
 is an inline list of statements, not a reference &mdash; the IR is a tree.
 Statement order determines memory ordering. There are no explicit memory tokens
 or effect edges. This is sound because all loops are fully unrolled during
@@ -359,7 +352,28 @@ vectorizer sees clean operands rather than chains of trivially-constant lets.
 It also means the lowering&rsquo;s constant-materialization cache has fewer unique
 constants to emit, reducing code size.</p>
 
-<h2 id="vectorize">Pass 2: Vectorize (<code>Vectorize.hs</code>)</h2>
+<h2 id="dce">Pass 2: Dead Code Elimination (<code>DCE.hs</code>)</h2>
+
+<p>After canonicalization propagates constants forward, some <code>Let</code> bindings become
+unused &mdash; their values were folded into downstream expressions and the
+original names are never referenced again. The DCE pass removes these dead
+bindings in two phases: a backward liveness analysis followed by a forward
+filter. <code>computeUsed</code> walks the statement list via <code>foldr</code>: for
+<code>Let x _ rhs</code>, it adds <code>rhsIds rhs</code> (the set of IDs referenced by the
+right-hand side) to the used set only if <code>x</code> is already in that set.
+<code>Store</code> and <code>For</code> statements unconditionally contribute their referenced IDs,
+since their effects are always observable. Then <code>filterDead</code> makes a forward
+pass that drops any <code>Let</code> binding whose ID is not in the used set.</p>
+
+<p>This is the textbook backward dataflow analysis, and the functional
+implementation is notably clean: the entire analysis is a <code>foldr</code> and the
+entire rewrite is a <code>concatMap</code>. It is the complement to Canonicalize &mdash;
+one propagates information forward (substituting constants into uses), the
+other propagates information backward (determining which definitions are
+needed). Together they form a standard constant-fold-then-eliminate sequence
+that appears in virtually every optimizing compiler.</p>
+
+<h2 id="vectorize">Pass 3: Vectorize (<code>Vectorize.hs</code>)</h2>
 
 <p>This is the core optimization. It rewrites eligible inner loops from scalar
 (step 1) to SIMD (step <code>w</code>, typically 8), turning scalar loads/stores into
@@ -437,7 +451,7 @@ patterns. It does not reorder statements. These are deliberate simplifications.
 The baseline kernel&rsquo;s inner loop is a pure map (no cross-iteration state), so
 the simple check is sufficient.</p>
 
-<h2 id="peephole">Pass 3: Peephole (<code>Peephole.hs</code>)</h2>
+<h2 id="peephole">Pass 4: Peephole (<code>Peephole.hs</code>)</h2>
 
 <p>The peephole pass scans the statement list for adjacent pairs:</p>
 
@@ -483,33 +497,24 @@ represents a scalar add writing scratch 10. The slot carries full type
 information &mdash; not strings &mdash; so the bundler extracts typed slot lists
 directly into the final <code>ISA.Bundle</code>.</p>
 
-<p>The metadata fields (<code>moReads</code>, <code>moWrites</code>, <code>moMem</code>) are what the bundler uses
-to determine which operations can safely share a cycle. For a scalar op,
-<code>moWrites</code> is a single address; for a vector op, it&rsquo;s <code>w</code> consecutive
-addresses. <code>MemAccess</code> records describe the memory region, direction
-(load/store), and optional address range for each memory operation. An
-<code>Unknown</code> range conservatively prevents packing with any other access to the
-same region.</p>
+<p>The metadata fields (<code>moReads</code>, <code>moWrites</code>, <code>moMem</code>) are what the bundler and
+scheduler use to determine which operations can safely share a cycle or be
+reordered. For a scalar op, <code>moWrites</code> is a single address; for a vector op,
+it&rsquo;s <code>w</code> consecutive addresses. <code>MemAccess</code> records describe the memory
+region, direction (load/store), and optional address range for each memory
+operation. An <code>Unknown</code> range conservatively prevents packing with any other
+access to the same region.</p>
 
 <h2 id="lowering">Lowering (<code>FinalLowering.hs</code>)</h2>
 
-<p>The lowering pass is the largest module (478 lines) because it handles
+<p>The lowering pass is the largest module because it handles
 scratch-pad allocation, address computation, constant materialization, loop
 unrolling, and the scalar/vector dispatch for every <code>Rhs</code> variant.</p>
 
 <h3 id="scratch-layout">Scratch-Pad Layout</h3>
 
-<p>The lowering allocates scratch-pad addresses in a single up-front pass:</p>
-
-<pre><code> Address      Purpose
- ──────────   ────────────────────────────────────
- 0..7         Header block (loaded by a single vload in the prelude)
- 8            Address temp for InpIdx / Forest / Header
- 9            Address temp for InpVal
- 10..17       Address temp vector (for gather base+index computation)
- 18..         SSA value storage (1 slot per I32, w slots per Vec)</code></pre>
-
-<p>Loop induction variables don&rsquo;t get persistent slots &mdash; they are materialized
+<p>The lowering allocates scratch-pad addresses in a single up-front pass.
+Loop induction variables don&rsquo;t get persistent slots &mdash; they are materialized
 as constants on each unrolled iteration. Header-load IDs are already mapped to
 header block slots 0&ndash;6.</p>
 
@@ -521,15 +526,6 @@ cycle. The IR&rsquo;s seven <code>RLoad LoadScalar Header</code> statements are 
 during lowering &mdash; the value for each is already in its scratch slot.</p>
 
 <h3 id="constants">Constants and Broadcasts</h3>
-
-<p>Three caches avoid redundant materialization:</p>
-
-<table>
-<tr><th>Cache</th><th>Key</th><th>Instruction Emitted</th></tr>
-<tr><td><code>lsConstS</code></td><td><code>Word32</code></td><td><code>const dst val</code> (Load engine)</td></tr>
-<tr><td><code>lsConstV</code></td><td><code>Word32</code></td><td><code>vbroadcast dst src</code> (VALU engine)</td></tr>
-<tr><td><code>lsBcast</code></td><td>Scalar scratch</td><td><code>vbroadcast dst src</code> (VALU engine)</td></tr>
-</table>
 
 <p><code>getConstS c</code> materializes a scalar constant once and caches the scratch
 address. <code>getConstV c</code> calls <code>getConstS</code> then broadcasts. <code>getBroadcast s</code>
@@ -591,22 +587,66 @@ this means 32 unrolled iterations (down from 256 scalar iterations). Each
 iteration emits vector ops that process 8 elements, so the total work is
 the same but uses roughly 8x fewer instructions.</p>
 
+<h2 id="scheduling">Instruction Scheduling (<code>Schedule.hs</code>)</h2>
+
+<p>The scheduler reorders the flat <code>[MachineOp]</code> list produced by lowering
+before it reaches the bundler. The bundler is greedy and in-order &mdash; it
+never reorders ops, it only decides whether the next op fits in the current
+bundle. So the scheduler&rsquo;s job is to present ops in an order that gives
+the bundler more packing opportunities, placing independent ops from
+different engines adjacent to each other rather than in long runs of the same
+engine type.</p>
+
+<h3 id="schedule-algo">Algorithm</h3>
+
+<p>The scheduler builds a dependency DAG from the <code>moReads</code> and <code>moWrites</code> fields
+of each <code>MachineOp</code>, tracking three kinds of hazards: RAW (read-after-write:
+an op reads a scratch address written by an earlier op), WAW
+(write-after-write: two ops write the same address), and WAR
+(write-after-read: an op writes an address read by an earlier op). Memory
+conflicts through <code>moMem</code> are also modeled &mdash; two ops that access the same
+memory region with at least one store are linked by a dependence edge.</p>
+
+<p>With the DAG built, the scheduler performs a topological sort using two
+priority criteria. First, <strong>longest-path priority</strong> (critical-path-first):
+ops on the longest dependence chain are scheduled first, because delaying them
+would extend the total schedule length. Second, as a tiebreaker,
+<strong>most-constrained engine</strong>: ops targeting engines with lower slot limits
+(Flow has only 1 slot per cycle; Store and Load have 2) are preferred over
+ops targeting the less constrained ALU engine (12 slots). This is a standard
+list scheduling approach adapted for VLIW, where the goal is not to minimize
+latency (all ops are single-cycle) but to maximize bundle packing density.</p>
+
+<h3 id="schedule-impact">Impact</h3>
+
+<p>For a 16-element batch with 1 round, the unscheduled vectorized pipeline
+produces 77 bundles; with the scheduler, 59 &mdash; a 23% reduction. For an
+8-element batch: 50 bundles unscheduled, 31 with scheduling &mdash; a 38%
+reduction. The improvement is larger for smaller batches because there are
+fewer total ops and more opportunities for cross-iteration packing.</p>
+
+<h3 id="schedule-composability">Why It Works as a Separate Pass</h3>
+
+<p>The scheduler&rsquo;s type signature is <code>[MachineOp] &rarr; [MachineOp]</code> &mdash; a
+pure reordering that preserves the set of ops exactly. This means it
+composes cleanly between lowering and bundling. The bundler does not need to
+know about scheduling; the scheduler does not need to know about slot limits
+or bundle structure. Each does one thing. This is the same principle that
+makes the rest of the pipeline work: passes are pure functions with narrow
+interfaces, and composition is just function application.</p>
+
 <h2 id="bundling">Bundling (<code>Bundle.hs</code>)</h2>
 
-<p>The bundler takes the flat <code>[MachineOp]</code> list and packs it into VLIW bundles,
-where each bundle represents one cycle on the simulator.</p>
+<p>The bundler takes the flat <code>[MachineOp]</code> list (now reordered by the scheduler)
+and packs it into VLIW bundles, where each bundle represents one cycle on the
+simulator.</p>
 
 <h3 id="bundling-algo">Algorithm</h3>
 
 <p>The bundler is a <strong>greedy in-order packetizer</strong>: it scans ops front-to-back
 and tries to add each op to the current bundle. If the op doesn&rsquo;t fit, the
 current bundle is flushed and a new one is started. <strong>Ops are never
-reordered.</strong></p>
-
-<p>This is not optimal (a scheduler that considers latencies could do better),
-but it is simple, correct, and still achieves significant packing because the
-lowering emits operations in a natural order where adjacent ops often target
-different engines.</p>
+reordered</strong> &mdash; that is the scheduler&rsquo;s responsibility.</p>
 
 <h3 id="bundling-legality">Legality Checks</h3>
 
@@ -628,13 +668,15 @@ a store in this bundle, the address ranges must not overlap.</p>
 
 <h3 id="bundling-practice">Packing in Practice</h3>
 
-<p>For a batch size of 16 with 1 round, the test suite shows: scalar pipeline
-produces <strong>386 bundles</strong> (nearly one op per cycle), while the vectorized
-pipeline produces <strong>77 bundles</strong>. The 5x reduction comes from two sources:
-vectorization reduces instruction count by ~8x, and the bundler packs
-multiple independent ops into each cycle (an ALU address computation and a
-LOAD can share a cycle, two LOADs can share a cycle, a VALU and a LOAD
-<code>const</code> can share a cycle, and so on).</p>
+<p>For a batch size of 16 with 1 round, the scalar pipeline
+produces <strong>386 bundles</strong> (nearly one op per cycle), while the vectorized and
+scheduled pipeline produces <strong>59 bundles</strong>. The roughly 6.5x reduction comes
+from three sources: vectorization reduces instruction count by processing
+8 elements per op, the scheduler reorders ops so that independent ops from
+different engines land next to each other, and the bundler fills cycles
+with those independent ops (an ALU address computation and a LOAD can share
+a cycle, two LOADs can share a cycle, a VALU and a LOAD <code>const</code> can share
+a cycle, and so on).</p>
 
 <h2 id="rendering">Rendering (<code>PythonInterop.hs</code>)</h2>
 
@@ -705,170 +747,94 @@ MSlotValu (VAlu Xor dst=42 src=26 src=34)           -- val ^= node
 MSlotStore (VStore addr=8 src=...)                   -- InpIdx[0:8] = wrapped
 MSlotStore (VStore addr=9 src=...)                   -- InpVal[0:8] = hashed</code></pre>
 
-<h3>Stage 6: After Bundling</h3>
+<h3>Stage 6: After Scheduling and Bundling</h3>
 
-<p>The bundler packs independent ops into cycles: the address ALU + VLoad share
-a cycle (different engines), the 8 gather <code>LoadOffset</code>s span 4 cycles
-(2 loads/cycle), VALU hash ops pack up to 6 per cycle, and the two VStores
-fit in one cycle.</p>
+<p>The scheduler reorders ops so that independent operations targeting different
+engines are adjacent. The bundler then packs them into cycles: the address
+ALU + VLoad share a cycle (different engines), the 8 gather
+<code>LoadOffset</code>s span 4 cycles (2 loads/cycle), VALU hash ops pack up to 6
+per cycle, and the two VStores fit in one cycle.</p>
 
 
 <h2 id="earlier-design">An Earlier, More Ambitious Design</h2>
 
-<p>The current compiler was preceded by a significantly more complex design &mdash;
-approximately 3,500 lines across 14 modules, compared to the current 1,400
-lines across 11. This earlier design attempted to build a general-purpose
-compiler infrastructure, and understanding <em>what</em> it tried to do and <em>why</em>
-those things are hard provides useful perspective on the tradeoffs inherent in
-compiler design.</p>
+<p>The current compiler replaced a significantly more complex predecessor.
+The story of that evolution is instructive, not as a list of features added
+and removed, but as a lesson in how domain knowledge changes what a compiler
+needs to be.</p>
 
-<h3 id="old-ir">The Old IR: Region-SSA with Parametric Debugging</h3>
+<h3 id="general-purpose">The General-Purpose Attempt</h3>
 
-<p>The old <code>FinalIR.hs</code> (258 lines) defined a richly-typed IR with deep
-support for memory effects, affine indexing, SIMD execution modes, and
-parametric debugging. Its core differences from the current design were:</p>
+<p>The old compiler tried to be a general-purpose structured-SSA compiler. Its IR
+featured region-SSA (similar to MLIR&rsquo;s structured control flow, where loops
+and conditionals have explicit parameter lists and yield values), memory tokens
+for effect sequencing (similar to MLIR&rsquo;s MemRef side-effect tracking, where
+every load and store consumes and produces a token that enforces ordering),
+affine index algebra for stride analysis (similar to polyhedral compilation,
+where array indices are represented as affine expressions over loop variables),
+and parametric debugging policies (where the entire IR was a <code>Functor</code> over a
+debug key type). The design philosophy was &ldquo;handle any structured program&rdquo;
+&mdash; build the infrastructure once, then instantiate it for specific
+kernels.</p>
 
-<p><strong>Type parameter <code>k</code>.</strong> Every type in the IR &mdash; <code>Kernel k</code>, <code>Region k</code>,
-<code>Stmt k</code>, <code>Effect k</code> &mdash; was parameterized over a phantom type <code>k</code>
-representing debug key references. This made the entire IR a <code>Functor</code> over
-debug key representations, enabling the compiler to transform debug
-annotations independently of program logic. The cost was that every function
-touching the IR had to be polymorphic in <code>k</code>, and <code>Functor</code> instances had to
-be derived for every type.</p>
-
-<p><strong>A richer type system.</strong> The old IR had five types instead of two:
+<p>This generality came with real engineering weight. Five types instead of two:
 <code>I32</code>, <code>Ptr</code>, <code>Vec Width Ty</code>, <code>Mask Width</code>, and <code>Mem MemSpace</code>.
-<code>Ptr</code> was a first-class address type distinct from <code>I32</code>, requiring separate
-pointer-arithmetic validation in the lowering. <code>Mask</code> was a dedicated predicate
-vector type for SIMD conditionals. <code>Mem MemSpace</code> was a phantom token type
-for memory effect sequencing.</p>
+<code>Let</code> had multiple outputs <code>[(Id, Ty)]</code> to accommodate value+token pairs.
+<code>If</code> had structured regions with params and yields. Every function in the
+compiler had to be polymorphic in the debug key type parameter <code>k</code>.</p>
 
-<p><strong>Affine index algebra.</strong> Rather than plain <code>Expr</code> offsets, the old IR had a
-full affine expression language:</p>
+<h3 id="where-wrong">Where It Went Wrong</h3>
 
-<pre><code>data Ix = IxConst Int | IxVar Id | IxLane | IxAdd Ix Ix | IxMul Int Ix
-data Index = IndexAff Ix | IndexVal Id
-data Addr = Addr { addrBase :: Id, addrIndex :: Index }</code></pre>
+<p>Three concrete problems motivated the rewrite:</p>
 
-<p><code>IxLane</code> represented the SIMD lane index. This algebra let the vectorizer reason
-about access patterns: <code>IxConst + IxMul 1 (IxVar iv)</code> is contiguous (vectorizable),
-<code>IxMul 2 (IxVar iv)</code> is strided (not vectorizable). The recursive lowering of
-this algebra to scratch-register operations took about 80 lines and handled
-constant folding at every node.</p>
+<p><strong>1. The kernel builder explosion.</strong> Every load required threading a
+memory token through <code>Let</code> with <code>[(Id, Ty)]</code> output pairs. A single
+<code>idx = InpIdx[i]</code> &mdash; one line in the current builder &mdash; required
+roughly eight: allocating memory token IDs, constructing <code>Addr</code> with
+<code>IndexAff (IxAdd (IxConst 0) (IxMul 1 (IxVar iv)))</code>, and rebinding the new
+memory token. The infrastructure for expressing the program was drowning out
+the program itself.</p>
 
-<p><strong>Memory tokens.</strong> Every load consumed a <code>Mem</code> token and produced both a
-value and a new <code>Mem</code> token. Every store consumed and produced a token. The
-<code>Let</code> node had <em>multiple</em> outputs <code>[(Id, Ty)]</code> to accommodate the value+token
-pair. The tokens had to be threaded linearly through control flow: in the
-presence of <code>If</code> nodes, the lowerer had to merge token chains from both
-branches.</p>
+<p><strong>2. The vectorizer complexity trap.</strong> The old vectorizer had to handle
+affine stride analysis, if-conversion, memory token passthrough, and
+carry/reduction classification. It classified values as <code>MUniform</code>,
+<code>MLaneBase</code>, or <code>MVec</code>, and performed backward stride analysis through the
+affine index algebra. But for this kernel, the inner loop is a pure map &mdash;
+there are no reductions, no conditional branches, no strided accesses.
+Both vectorizers produce identical output for this kernel.
+The difference is that the simpler one &mdash; a single legality check
+(<code>ivOnlyUsedAsInpIndex</code>) and a straightforward rewrite of load/store kinds
+&mdash; is easy to verify by reading it.</p>
 
-<p><strong>Structured <code>If</code> with regions.</strong> The old IR had
-<code>If { ifCond, ifThen :: Region k, ifElse :: Region k, ifOuts }</code>.
-Each <code>Region</code> had <code>regionParams</code>, <code>regionStmts</code>, and <code>regionYield</code> &mdash;
-a structured form of phi-node that encoded which values flow into and out
-of the region. The <code>For</code> loop similarly had <code>forInits</code> (loop-carried values)
-and a region body with params and yields.</p>
+<p><strong>3. Silent correctness risk.</strong> The affine index algebra could silently
+misclassify an access pattern. If <code>IxMul 2 (IxVar iv)</code> were incorrectly
+classified as contiguous (rather than strided), the vectorizer would emit a
+<code>vload</code> that reads the wrong elements &mdash; a silent data corruption bug with
+no crash. The named-buffer approach eliminates this entire category of bugs.
+<code>LoadScalar InpIdx (Var iv)</code> is unambiguously a contiguous access by
+construction: the buffer name tells you which region, and the expression tells
+you the offset. There is no stride to misclassify.</p>
 
-<p><strong>Carry parameters and reduction.</strong> The loop&rsquo;s region params/yields encoded
-loop-carried state. The vectorizer had to analyze each carry to determine
-whether it was (a) a memory token (pass through), (b) an associative reduction
-like <code>acc = acc + x[i]</code>, or (c) unsupported. <code>RReduce AluOp Id</code> was a
-dedicated IR node for horizontal SIMD reduction.</p>
+<h3 id="design-insight">The Design Insight</h3>
 
-<h3 id="old-vectorizer">The Old Vectorizer: 998 Lines of Analysis</h3>
+<p>The key realization was that the kernel&rsquo;s memory layout is <em>known at compile
+time</em>. The four buffers, the header structure, the access patterns &mdash; all
+of this is fixed. A general-purpose compiler must <em>discover</em> that two pointer
+expressions don&rsquo;t alias; this compiler <em>knows</em> it because the IR says
+<code>InpIdx</code> and <code>Forest</code>. This is the same insight that motivates MLIR&rsquo;s dialect
+system: rather than one IR that handles everything, you build domain-specific
+IRs that encode what you know. The tradeoff is real &mdash; the compiler can
+only handle kernels that fit its buffer model &mdash; but the reward is a
+vectorizer that is 6x smaller and a lowering that is 2.5x smaller.</p>
 
-<p>The old <code>BatchVectorizeFinalIR.hs</code> (998 lines) was a sophisticated pass.
-It classified values as <code>MUniform</code> (same across lanes), <code>MLaneBase</code>
-(contiguous with the induction variable), or <code>MVec</code> (fully vector).
-It performed backward stride analysis through the affine index algebra.
-It had a prepass that converted <code>If</code> nodes into <code>RSelect</code> operations
-(if-conversion), and another prepass that canonicalized address expressions
-to recover structured information from flattened pointer arithmetic.</p>
-
-<p>Compare this with the current vectorizer: 156 lines, a single legality check
-(<code>ivOnlyUsedAsInpIndex</code>), and a straightforward rewrite of load/store kinds.</p>
-
-<h3 id="old-lowering">The Old Lowering: 1,224 Lines</h3>
-
-<p>The old lowering had to handle <code>If</code> nodes (with conditional jumps and
-branch merging), <code>Region</code> with carry parameters, <code>Ptr</code> type validation,
-recursive affine index lowering, memory token validation, multi-output
-<code>Let</code> nodes, a parametric debug key mapping function, and
-<code>RReduce</code> expansion into vector accumulation + horizontal reduction + scalar
-combine. The current lowering is 478 lines.</p>
-
-<h3 id="why-hard">Why These Features Are Genuinely Hard</h3>
-
-<p>Each of the features that was removed represents a genuinely difficult
-compiler engineering problem:</p>
-
-<p><strong>Memory tokens</strong> enforce memory ordering through the type system. This is the
-approach used by MLIR&rsquo;s MemRef dialect and LLVM&rsquo;s memory SSA. The difficulty is
-<em>composability</em>: every load and store must consume and produce a token, and the
-tokens must be threaded linearly through control flow. In the presence of
-<code>If</code> nodes, the lowerer must merge token chains from both branches. A single
-dropped or duplicated token silently breaks memory ordering, causing loads to
-see stale values. The old compiler&rsquo;s multi-output <code>Let</code> and carry parameter
-threading through <code>Region</code> yields was the mechanism for this, and it required
-careful validation at every step.</p>
-
-<p><strong>Affine index algebra</strong> provides the representation for stride analysis, but
-the analysis itself must propagate stride information backward through arbitrary
-expression DAGs. Getting this wrong means the vectorizer might emit a contiguous
-<code>vload</code> for what is actually a strided or random access pattern &mdash; a silent
-correctness bug that produces wrong results but no crash.</p>
-
-<p><strong>If-conversion</strong> (converting branches to predicated <code>select</code> operations) is
-sound only when both branches are pure. The boundary is subtle: a branch that
-looks pure but contains a load through an aliased pointer is not safe to
-speculate. The interaction with memory tokens makes this especially delicate.</p>
-
-<p><strong>Carry analysis and reduction vectorization</strong> require recognizing that a
-loop-carried dependence like <code>acc = acc + x[i]</code> can be vectorized by
-accumulating partial sums in a vector and reducing at the end. The analysis
-must verify associativity of the reduction operator, correctly identify which
-operand is the carry vs. the contribution, and generate the reduction epilogue.
-Non-associative operations (subtraction, division) must be correctly rejected.</p>
-
-<p><strong>Parametric debug policies</strong> introduced a higher-kinded abstraction where the
-compiler was generic over the representation of debug keys. When a scalar loop
-became a vector loop, one debug key per iteration had to become <code>w</code> keys per
-vector iteration. Error handling had to flow through <code>Either String</code> at every
-policy callback, and the policy interacted with every IR transformation.</p>
-
-<h3 id="the-tradeoff">The Tradeoff</h3>
-
-<p>The fundamental design shift was from a <em>general-purpose region-SSA compiler</em>
-to a <em>domain-specific compiler for a known kernel shape</em>. The old compiler was
-built to handle arbitrary structured programs with unknown access patterns,
-dynamic loop bounds, conditional branches, and loop-carried dependences. The
-new compiler exploits the fact that the target kernel has a fixed structure:
-nested <code>For</code> loops over known buffers with known access patterns.</p>
-
-<p>The quantitative result is a 3.3x reduction in code size:</p>
-
-<table>
-<tr><th>Component</th><th>Old</th><th>New</th><th>Ratio</th></tr>
-<tr><td>IR definition</td><td>258 lines</td><td>144 lines</td><td>1.8x</td></tr>
-<tr><td>Lowering</td><td>1,224 lines</td><td>478 lines</td><td>2.6x</td></tr>
-<tr><td>Vectorization</td><td>998 lines</td><td>156 lines</td><td>6.4x</td></tr>
-<tr><td>Kernel builder</td><td>528 lines</td><td>62 lines</td><td>8.5x</td></tr>
-<tr><td><strong>Total</strong></td><td><strong>~3,500 lines / 14 modules</strong></td><td><strong>1,400 lines / 11 modules</strong></td><td><strong>2.5x</strong></td></tr>
-</table>
-
-<p>This is a classic tradeoff in compiler design. The old design was more powerful
-and extensible. The new design is simpler, more transparent, and produces
-correct output for the actual workload. Neither is wrong &mdash; they are
-answers to different questions. The old compiler asked, &ldquo;What would it take to
-handle <em>any</em> structured program on this machine?&rdquo; The new one asks, &ldquo;What is
-the clearest path from <em>this</em> program to efficient machine code?&rdquo;</p>
-
-<p>One way to view the relationship is that the features in the old compiler
-&mdash; memory tokens, affine indices, if-conversion, carry analysis &mdash;
-represent a <em>menu</em> of things a compiler might need. The insight behind the
-new design is that for this kernel, we only need a small subset of that menu,
-and by committing to that subset we gain enormous simplicity.</p>
+<p>Having simplified to this domain-specific core, it became straightforward to
+add features that serve the domain well: an instruction scheduler for VLIW
+packing, dead code elimination as a standard cleanup pass, and
+<code>RReduce</code> for horizontal vector reductions. Neither the old nor the new
+design is wrong; they are answers to different questions. The old compiler
+asked, &ldquo;What would it take to handle <em>any</em> structured program on this
+machine?&rdquo; The new one asks, &ldquo;What is the clearest path from <em>this</em> program
+to efficient machine code?&rdquo;</p>
 
 <h2 id="haskell-techniques">Haskell Techniques in the Compiler</h2>
 
@@ -881,8 +847,9 @@ compile time rather than runtime.</p>
 
 <p><strong>Pure functions as passes.</strong> Every compiler pass is a pure function:
 <code>Function &rarr; Function</code>, <code>Function &rarr; [MachineOp]</code>,
-<code>[MachineOp] &rarr; [Bundle ()]</code>. This makes it trivial to test passes in
-isolation, compose them in any order, and reason about what each one does.</p>
+<code>[MachineOp] &rarr; [MachineOp]</code>, <code>[MachineOp] &rarr; [Bundle ()]</code>. This makes
+it trivial to test passes in isolation, compose them in any order, and reason
+about what each one does.</p>
 
 <p><strong>The <code>State</code> monad for accumulation.</strong> The IR builder and the lowering pass use
 <code>State</code> to thread a counter (for fresh IDs / scratch addresses) and an
@@ -897,6 +864,21 @@ accumulator. These are not exotic techniques &mdash; they are the bread and
 butter of functional programming &mdash; but they lead to surprisingly concise
 compiler code.</p>
 
+<p><strong><code>foldr</code> for backward dataflow.</strong> The DCE pass uses <code>foldr</code> to walk the
+statement list from back to front, accumulating a set of used IDs. This is
+the natural way to express backward analysis in a functional language: instead
+of iterating in reverse with a mutable set, you fold right with an immutable
+accumulator. The analysis and the rewrite are each a single higher-order
+function call.</p>
+
+<p><strong><code>IntMap</code>/<code>IntSet</code> for the dependency DAG.</strong> The scheduler represents its
+dependency graph with <code>IntMap</code> (mapping op indices to their successors) and
+<code>IntSet</code> (for the ready set and visited sets). These are purely functional
+data structures with O(min(n, W)) lookup, where W is the word size &mdash;
+effectively O(1) for the sizes involved. They give the scheduler the
+performance characteristics of imperative graph algorithms while remaining
+purely functional.</p>
+
 <p><strong>Shared ADTs as a contract.</strong> The <code>AluOp</code> type, the slot ADTs, and the
 <code>Bundle</code> type from <code>ISA.hs</code> are shared between the compiler and the simulator.
 This is a compile-time guarantee that the compiler can only emit valid
@@ -905,27 +887,31 @@ validation or external schema checking.</p>
 
 <h2 id="summary">Summary</h2>
 
-<p>The compiler transforms a scalar kernel into vectorized, bundled machine code
-through six pure functional passes:</p>
+<p>The compiler transforms a scalar kernel into vectorized, scheduled, bundled
+machine code through eight pure functional passes:</p>
 
 <ol>
 <li><strong>Kernel construction</strong> builds the scalar IR using a monadic builder.</li>
-<li><strong>Canonicalization</strong> folds constants.</li>
+<li><strong>Canonicalization</strong> folds constants and propagates them forward.</li>
+<li><strong>Dead code elimination</strong> removes bindings made unused by constant folding.</li>
 <li><strong>Vectorization</strong> rewrites eligible loops to process 8 elements per iteration,
 with tail loops for non-divisible trip counts.</li>
 <li><strong>Peephole optimization</strong> fuses multiply-add pairs.</li>
 <li><strong>Lowering</strong> allocates scratch addresses, unrolls loops, and emits typed
 machine operations with hazard metadata.</li>
+<li><strong>Scheduling</strong> reorders operations using critical-path-first list scheduling
+to maximize VLIW packing density.</li>
 <li><strong>Bundling</strong> packs operations into VLIW bundles, checking slot limits, register
 hazards, and memory conflicts.</li>
 </ol>
 
-<p>The whole pipeline composes into four lines of Haskell. Every intermediate
+<p>The whole pipeline composes into a handful of lines of Haskell. Every intermediate
 form is an algebraic data type, every pass is a pure function, and the
 shared ISA library provides a compile-time contract between the compiler and
-the simulator. The result is a compiler that is small (1,400 lines), correct
-(all tests pass), and reasonably efficient (5x fewer cycles than the scalar
-baseline for the same computation).</p>
+the simulator. The result is a compiler that is small, transparent, and
+efficient &mdash; the scheduler alone reduces bundle count by 23&ndash;38% on
+top of vectorization, bringing the vectorized pipeline to roughly 6.5x fewer
+cycles than the scalar baseline.</p>
 
 </div>
 
