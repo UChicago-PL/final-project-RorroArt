@@ -152,9 +152,9 @@ allocates:</p>
 <p>Using symbolic buffer names instead of raw pointers is the single most
 important design decision in the IR. It is what makes the vectorizer
 <em>possible</em> without a general-purpose alias analysis. The vectorizer can ascertain
-&ldquo;Does this load use the induction ariable as an index into
-<code>InpIdx</code>?&rdquo; by pattern-matching on the buffer name. It never needs to solve the
-undecidable problem of whether two arbitrary pointer expressions might alias.</p>
+&ldquo;Does this load use the induction variable as an index into
+<code>InpIdx</code>?&rdquo; by pattern-matching on the buffer name. We avoid trying to solve the
+(undecidable) problem of whether two arbitrary pointer expressions might alias.</p>
 
 <h3 id="load-store-kinds">Load and Store Kinds</h3>
 
@@ -171,9 +171,7 @@ instruction based on this tag: <code>load</code> vs. <code>vload</code> vs. <cod
 
 <p>This is an instance of a useful compiler design pattern: the analysis pass
 (Vectorize) communicates its decisions to the code-generation pass (Lowering)
-<em>declaratively</em>, by rewriting the IR, rather than through side channels.
-Each pass is a pure function from <code>Function &rarr; Function</code>, and the information
-flows through the data.</p>
+<em>declaratively</em>, by rewriting the IR. Obviously, we took heavy inspiration from MLIR and LLVM.</p>
 
 <h3 id="rhs">Right-Hand Sides</h3>
 
@@ -190,14 +188,9 @@ flows through the data.</p>
 <tr><td><code>RVBroadcast w e</code></td><td>Broadcast scalar to vector</td><td>(Available for future use)</td></tr>
 </table>
 
-<p><code>RBin</code> takes <code>AluOp</code> directly from the shared <code>ISA.hs</code> library &mdash; the
-same enum the simulator uses. This means the compiler and simulator agree on
-the set of operations by construction.</p>
-
 <p><code>RSelect</code> replaces traditional if-conversion. Instead of <code>if c then a else b</code>
 as a control-flow construct, the kernel uses <code>RSelect</code> directly, which lowers
-to the simulator&rsquo;s <code>select</code> (scalar) or <code>vselect</code> (vector) flow slot. This
-avoids the need for a separate if-conversion pass entirely.</p>
+to the simulator&rsquo;s <code>select</code> (scalar) or <code>vselect</code> (vector) flow slot.
 
 <p><code>RMulAdd</code> does not appear in the initial kernel. It is introduced by the
 peephole pass when it discovers a <code>Mul</code> followed by an <code>Add</code>. The lowering maps
@@ -205,10 +198,7 @@ it to a single <code>multiply_add</code> VALU slot for vectors, or two ALU slots
 then add) for scalars.</p>
 
 <p><code>RReduce op e</code> represents a horizontal reduction of a vector value <code>e</code> to a
-scalar using the associative operation <code>op</code>. It is introduced by kernel builders
-for reduction patterns and lowered to a log&#8322;(w) tree of scalar ALU ops &mdash;
-for example, an 8-wide <code>RReduce Add v</code> becomes three stages of pairwise
-additions.</p>
+scalar using an associative operation <code>op</code>. It is introduced for reduction patterns and lowered to a log&#8322;(w) tree of scalar ALU ops &mdash; for example, an 8-wide <code>RReduce Add v</code> becomes three stages of pairwise additions.</p>
 
 <h3 id="stmts">Statements</h3>
 
