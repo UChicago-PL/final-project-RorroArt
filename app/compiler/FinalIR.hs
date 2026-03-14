@@ -15,6 +15,7 @@ module FinalIR
   , emitLet
   , emitStore
   , emitFor
+  , emitForWithCarry
   ) where
 
 import Control.Monad.State.Strict (State, get, put, modify, runState)
@@ -70,13 +71,14 @@ data Rhs
   | RSelect !Expr !Expr !Expr
   | RLoad !LoadKind !Buffer !Expr
   | RVBroadcast !Int !Expr
+  | RReduce !AluOp !Expr    -- horizontal reduction of a vector to scalar
   deriving (Eq, Ord, Show)
 
 -- | Statements.
 data Stmt
   = Let !Id !Ty !Rhs
   | Store !StoreKind !Buffer !Expr !Expr
-  | For !Id !Int !Int !Int ![Stmt]   -- iv, start, end, step, body
+  | For !Id !Int !Int !Int ![(Id, Expr)] ![Stmt]   -- iv, start, end, step, carries, body
   deriving (Eq, Ord, Show)
 
 newtype Function = Function { fnBody :: [Stmt] }
@@ -132,7 +134,20 @@ emitFor :: Int -> Int -> Int -> (Expr -> Build ()) -> Build ()
 emitFor start end step bodyFn = do
   iv <- fresh
   bodyStmts <- capture (bodyFn (Var iv))
-  emitStmt (For iv start end step bodyStmts)
+  emitStmt (For iv start end step [] bodyStmts)
+
+emitForWithCarry :: Int -> Int -> Int -> [(Ty, Expr)]
+                 -> (Expr -> [Expr] -> Build [Expr]) -> Build [Expr]
+emitForWithCarry start end step tyInits bodyFn = do
+  iv       <- fresh
+  carryIds <- mapM (const fresh) tyInits
+  let carryExprs = map Var carryIds
+      initPairs = zip carryIds (map snd tyInits)
+  bodyStmts <- capture $ do
+    _results <- bodyFn (Var iv) carryExprs
+    pure ()
+  emitStmt (For iv start end step initPairs bodyStmts)
+  pure (map Var carryIds)
 
 capture :: Build a -> Build [Stmt]
 capture (Build m) = Build $ do

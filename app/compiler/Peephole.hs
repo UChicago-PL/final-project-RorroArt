@@ -10,8 +10,8 @@ combineMulAdd :: Function -> Function
 combineMulAdd (Function ss) = Function (goBlock ss)
   where
     goBlock [] = []
-    goBlock (For iv s e step body : rest) =
-      For iv s e step (goBlock body) : goBlock rest
+    goBlock (For iv s e step carries body : rest) =
+      For iv s e step carries (goBlock body) : goBlock rest
 
     goBlock (Let t tyT (RBin Mul a b)
            : Let y tyY (RBin Add (Var t1) c)
@@ -44,7 +44,7 @@ usesId x = any usesStmt
       case stmt of
         Let _ _ rhs -> usesRhs rhs
         Store _ _ ix v -> usesExpr ix || usesExpr v
-        For _ _ _ _ body -> usesId x body
+        For _ _ _ _ _ body -> usesId x body
 
     usesRhs rhs =
       case rhs of
@@ -54,6 +54,7 @@ usesId x = any usesStmt
         RSelect c a b -> usesExpr c || usesExpr a || usesExpr b
         RLoad _ _ ix -> usesExpr ix
         RVBroadcast _ e -> usesExpr e
+        RReduce _ e -> usesExpr e
 
     usesExpr e =
       case e of

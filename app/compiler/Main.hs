@@ -5,9 +5,11 @@ import System.Exit (exitFailure)
 
 import BaselineKernel (scalarKernel)
 import Canonicalize (canonicalize)
+import DCE (eliminateDeadCode)
 import Vectorize (vectorizeBatch)
 import Peephole (combineMulAdd)
 import FinalLowering (lowerToMachineOps)
+import Schedule (schedule)
 import Bundle (bundleProgram)
 import PythonInterop (renderProgramPayload)
 import TestSuite (runTests)
@@ -32,8 +34,9 @@ main = do
 compile :: FilePath -> Int -> Int -> IO ()
 compile outPath rounds batchSize = do
   let fn   = scalarKernel rounds batchSize
-      fn'  = combineMulAdd . vectorizeBatch defaultVLen . canonicalize $ fn
-      ops  = lowerToMachineOps defaultVLen fn'
+      fn'  = combineMulAdd . vectorizeBatch defaultVLen
+            . eliminateDeadCode . canonicalize $ fn
+      ops  = schedule (lowerToMachineOps defaultVLen fn')
       bundles = bundleProgram ops
   writeFile outPath (renderProgramPayload rounds batchSize bundles)
   putStrLn $ "Wrote " ++ show (length bundles) ++ " bundles to " ++ outPath

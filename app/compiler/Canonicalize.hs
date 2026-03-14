@@ -29,9 +29,11 @@ goBlock env0 = foldl step (env0, [])
         Store k buf ix v ->
           (env, acc ++ [Store k buf (simpExpr env ix) (simpExpr env v)])
 
-        For iv s e stepN body ->
-          let (_envBody, body') = goBlock (M.delete iv env) body
-          in (env, acc ++ [For iv s e stepN body'])
+        For iv s e stepN carries body ->
+          let carries' = [ (cid, simpExpr env cinit) | (cid, cinit) <- carries ]
+              envBody  = foldl (\m (cid, _) -> M.delete cid m) (M.delete iv env) carries
+              (_envBody, body') = goBlock envBody body
+          in (env, acc ++ [For iv s e stepN carries' body'])
 
 rhsConst :: Rhs -> Maybe Word32
 rhsConst (RConst c) = Just c
@@ -41,6 +43,7 @@ rhsConst (RSelect (Const c) a b) =
   case (if c /= 0 then a else b) of
     Const x -> Just x
     _       -> Nothing
+rhsConst (RReduce _ _) = Nothing
 rhsConst _ = Nothing
 
 simpExpr :: Map Id Word32 -> Expr -> Expr
@@ -78,6 +81,8 @@ simpRhs env rhs =
     RLoad k buf ix -> RLoad k buf (simpExpr env ix)
 
     RVBroadcast w e -> RVBroadcast w (simpExpr env e)
+
+    RReduce op e -> RReduce op (simpExpr env e)
 
 evalAluOp :: AluOp -> Word32 -> Word32 -> Word32
 evalAluOp op a b =

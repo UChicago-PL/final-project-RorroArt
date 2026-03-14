@@ -2,6 +2,7 @@ module FinalLowering
   ( lowerToMachineOps
   ) where
 
+import Control.Monad (when)
 import Control.Monad.State.Strict (State, get, gets, put, modify, execState)
 import Data.List (foldl')
 import Data.Map.Strict (Map)
@@ -228,9 +229,21 @@ lowerStmt env stmt =
 
     Store k buf ix v -> lowerStore env k buf ix v
 
-    For iv s e stepN body ->
+    For iv s e stepN carries body ->
       let used = ivUsedInBody iv body
-      in mapM_ (\i -> do
+          iters = [s, s + stepN .. e - 1]
+      in do
+        -- Initialize carry variables from their init exprs
+        _carryRegs <- mapM (\(cid, cinit) -> do
+          dst <- lookupIdReg env cid
+          src <- exprScalar env cinit
+          zero <- getConstS 0
+          when (dst /= src) $
+            emit (MSlotAlu (ISA.Alu Add (sa dst) (sa src) (sa zero))) [src, zero] [dst] []
+          pure (cid, dst)
+          ) carries
+        -- Unroll iterations, threading carry state
+        mapM_ (\i -> do
                   env' <- if used
                             then do
                               r <- getConstS (fromIntegral i)
@@ -239,8 +252,9 @@ lowerStmt env stmt =
                                 , leVal = M.insert iv i (leVal env)
                                 }
                             else pure env
+                  -- Carry Ids already have scratch allocated; body will read/write them
                   lowerStmts env' body
-              ) [s, s + stepN .. e - 1]
+              ) iters
 
 lowerLet :: LoopEnv -> Id -> Ty -> Rhs -> LowerM ()
 lowerLet env x ty rhs = do
@@ -301,6 +315,13 @@ lowerLet env x ty rhs = do
     RVBroadcast _w e -> do
       s <- exprScalar env e
       emit (MSlotValu (ISA.VBroadcast (sa dst) (sa s))) [s] (vecWrites st dst) []
+
+    RReduce op e -> do
+      w <- gets lsW
+      src <- exprVector env e
+      -- Tree reduction: reduce w lanes down to 1 scalar in dst
+      -- Phase 1: pair-wise reduce into temporaries
+      lowerReduceTree op dst src w
 
     RLoad k buf ix ->
       case k of
@@ -381,6 +402,29 @@ lowerLoadVecGather env dst buf ix = do
         ) [0 .. w - 1]
 
 -- ---------------------------------------------------------------------------
+-- Horizontal reduction
+-- ---------------------------------------------------------------------------
+
+-- | Tree-reduce w scalar lanes from a vector base register into a single dst.
+lowerReduceTree :: AluOp -> Int -> Int -> Int -> LowerM ()
+lowerReduceTree op dst src w = go [src .. src + w - 1]
+  where
+    go [single] = do
+      -- Copy the single remaining lane to dst
+      zero <- getConstS 0
+      emit (MSlotAlu (ISA.Alu Add (sa dst) (sa single) (sa zero))) [single, zero] [dst] []
+    go lanes = do
+      let pairs   = zip (take half lanes) (drop half lanes)
+          half    = length lanes `div` 2
+          leftovers = drop (half * 2) lanes
+      tmps <- mapM (\(a, b) -> do
+                t <- allocScratch 1
+                emit (MSlotAlu (ISA.Alu op (sa t) (sa a) (sa b))) [a, b] [t] []
+                pure t
+              ) pairs
+      go (tmps ++ leftovers)
+
+-- ---------------------------------------------------------------------------
 -- Helpers
 -- ---------------------------------------------------------------------------
 
@@ -436,8 +480,9 @@ collectTypes (Function ss) = goBlock M.empty ss
       case stmt of
         Let x ty _ -> M.insert x ty env
         Store{}    -> env
-        For iv _ _ _ body ->
-          let env1 = M.insert iv I32 env
+        For iv _ _ _ carries body ->
+          let env1 = foldl' (\m (cid, _) -> M.insert cid I32 m)
+                            (M.insert iv I32 env) carries
           in goBlock env1 body
 
 collectLoopVars :: Function -> Set Id
@@ -446,7 +491,8 @@ collectLoopVars (Function ss) = goBlock S.empty ss
     goBlock acc = foldl' go acc
     go acc stmt =
       case stmt of
-        For iv _ _ _ body -> goBlock (S.insert iv acc) body
+        For iv _ _ _ _carries body ->
+          goBlock (S.insert iv acc) body
         _                 -> acc
 
 takeHeaderLets :: [Stmt] -> [(Id, Int)]
@@ -472,6 +518,7 @@ ivUsedInBody iv = any usesStmt
         RSelect c a b -> usesExpr c || usesExpr a || usesExpr b
         RLoad _ _ ix -> usesExpr ix
         RVBroadcast _ e -> usesExpr e
+        RReduce _ e -> usesExpr e
     usesExpr e =
       case e of
         Var x   -> x == iv

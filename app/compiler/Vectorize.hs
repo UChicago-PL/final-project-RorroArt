@@ -23,26 +23,26 @@ vectorizeBatch w (Function ss) = Function (snd (goBlock M.empty ss))
         Store k buf ix v ->
           (env, acc ++ [Store k buf ix v])
 
-        For iv s e stepN body ->
+        For iv s e stepN carries body ->
           let envIn = M.insert iv I32 env
-          in if stepN == 1 && ivOnlyUsedAsInpIndex iv body
+          in if stepN == 1 && null carries && ivOnlyUsedAsInpIndex iv body
              then
                let tripCount = e - s
                    vecEnd = s + (tripCount `div` w) * w
                    (_envV, bodyV) = vectorizeBody w envIn iv body
-                   loopV = For iv s vecEnd w bodyV
+                   loopV = For iv s vecEnd w [] bodyV
                    (_envT, bodyT) = goBlock envIn body
-                   loopT = For iv vecEnd e 1 bodyT
+                   loopT = For iv vecEnd e 1 [] bodyT
                in if vecEnd > s
                   then if vecEnd < e
                        then (env, acc ++ [loopV, loopT])
                        else (env, acc ++ [loopV])
                   else
                     let (_envS, body') = goBlock envIn body
-                    in (env, acc ++ [For iv s e stepN body'])
+                    in (env, acc ++ [For iv s e stepN carries body'])
              else
                let (_envOut, body') = goBlock envIn body
-               in (env, acc ++ [For iv s e stepN body'])
+               in (env, acc ++ [For iv s e stepN carries body'])
 
     vectorizeBody :: Int -> Map Id Ty -> Id -> [Stmt] -> (Map Id Ty, [Stmt])
     vectorizeBody w0 env0 iv = foldl stepB (env0, [])
@@ -90,6 +90,7 @@ ivOnlyUsedAsInpIndex iv = all okStmt
         RSelect c a b -> not (usesIv c) && not (usesIv a) && not (usesIv b)
         RLoad _ buf ix -> okLoad buf ix
         RVBroadcast _ e -> not (usesIv e)
+        RReduce _ e -> not (usesIv e)
 
     okLoad buf ix =
       case (buf, ix) of
@@ -118,6 +119,7 @@ rewriteRhs w env iv rhs =
     RMulAdd a b c   -> RMulAdd a b c
     RSelect c a b   -> RSelect c a b
     RVBroadcast bw e -> RVBroadcast bw e
+    RReduce op e -> RReduce op e
     RLoad k buf ix ->
       case (k, buf, ix) of
         (LoadScalar, InpIdx, Var j) | j == iv -> RLoad (LoadContigVec w) buf (Var j)
@@ -145,6 +147,8 @@ inferTy w env rhs =
         LoadGatherVec _ -> Vec w I32
 
     RVBroadcast _ _ -> Vec w I32
+
+    RReduce _ _ -> I32
 
     RBin _ a b -> join2 (exprTy env a) (exprTy env b)
 
