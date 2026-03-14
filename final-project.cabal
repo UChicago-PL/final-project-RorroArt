@@ -45,9 +45,11 @@ executable compiler
         Machine
         BaselineKernel
         Canonicalize
+        DCE
         Vectorize
         Peephole
         FinalLowering
+        Schedule
         Bundle
         PythonInterop
         TestSuite
