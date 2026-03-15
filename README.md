@@ -14,9 +14,12 @@ cabal run compiler -- check-ir-lowering
 cabal run compiler -- export-baseline /tmp/fp_final_project_baseline.pydata
 ```
 
-## Run with the Haskell simulator
+## Compile and run end-to-end
+Generate a memory image, compile the optimized program, and run it:
 ```bash
-cabal run simulator -- <program.bundle> -m <memory.bin>
+uv run scripts/gen_baseline.py /tmp/out
+cabal run compiler -- /tmp/out/optimized.bundle
+cabal run simulator -- /tmp/out/optimized.bundle -m /tmp/out/baseline.bin
 ```
 Add `--trace` for cycle-by-cycle output.
 
