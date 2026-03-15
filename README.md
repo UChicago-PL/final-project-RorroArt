@@ -14,7 +14,14 @@ cabal run compiler -- check-ir-lowering
 cabal run compiler -- export-baseline /tmp/fp_final_project_baseline.pydata
 ```
 
-Optionally, run the Python simulator against the exported payload:
+## Run with the Haskell simulator
 ```bash
-python3 /Users/aryavohra/fp/vliw_monad/tools/run_hs_program.py --payload /tmp/fp_final_project_baseline.pydata
+cabal run simulator -- <program.bundle> -m <memory.bin>
 ```
+Add `--trace` for cycle-by-cycle output.
+
+## Run property-based tests
+```bash
+cabal test pbt
+```
+This runs 1000 random programs against the Python reference simulator.
